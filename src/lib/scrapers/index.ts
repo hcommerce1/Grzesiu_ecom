@@ -6,6 +6,7 @@ import { extractGeneric } from './generic';
 import { extractShopify } from './shopify';
 import { extractCostway } from './costway';
 import { extractWoltu } from './woltu';
+import { extractAllegro } from './allegro';
 
 /**
  * Orchestrator Router: Resolves the domain from the URL and routes to the correct scraper.
@@ -32,6 +33,9 @@ export const getExtractorForUrl = (url: string): SiteExtractor => {
         }
         if (hostname.includes('woltu.')) {
             return extractWoltu;
+        }
+        if (hostname.includes('allegro.pl')) {
+            return extractAllegro;
         }
 
         // Add additional site scrapers here...

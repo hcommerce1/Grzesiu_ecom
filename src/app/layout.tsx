@@ -1,35 +1,35 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
+import type { Metadata, Viewport } from "next"
+import { Inter } from "next/font/google"
+import { Toaster } from "@/components/ui/sonner"
+import { QueryProvider } from "@/components/QueryProvider"
+import "./globals.css"
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin", "latin-ext"],
+})
 
 export const metadata: Metadata = {
-  title: "E-Commerce Scraper — Extract Product Details",
-  description: "Paste any product URL to instantly extract title, images, description, and specs into a clean, copy-pasteable format.",
-};
+  title: "Allegro / BaseLinker — Menedżer ofert",
+  description: "Scrapuj produkty, generuj opisy i wystawiaj oferty na Allegro przez BaseLinker.",
+}
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
-      <body
-        suppressHydrationWarning
-        className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen`}
-      >
-        {children}
+    <html lang="pl" className={`${inter.variable} h-full antialiased`}>
+      <body className="min-h-full bg-background text-foreground font-sans">
+        <QueryProvider>
+          {children}
+        </QueryProvider>
+        <Toaster />
       </body>
     </html>
-  );
+  )
 }
