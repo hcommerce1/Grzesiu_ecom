@@ -5,7 +5,6 @@ import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X
 import { CategorySelector } from "./CategorySelector"
 import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
 import { ApprovalDrawer } from "./ApprovalDrawer"
-import { AllegroPreviewFrame } from "./AllegroPreviewFrame"
 import { PreviewContainer } from "./previews/PreviewContainer"
 import { ImageManagementStep } from "./ImageManagementStep"
 import { DescriptionGenerationStep } from "./DescriptionGenerationStep"
@@ -574,7 +573,9 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 parameters={localParameters}
               />
             ) : (
-              <AllegroPreviewFrame />
+              <div className="border border-border rounded-xl p-8 text-center text-muted text-sm">
+                Wygeneruj opis, aby zobaczyć podgląd oferty.
+              </div>
             )}
             <Button
               onClick={async () => {
