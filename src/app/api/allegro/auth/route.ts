@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { startDeviceFlow, pollDeviceToken, loadToken } from '@/lib/allegro';
+import { startDeviceFlow, pollDeviceTokenOnce, loadToken } from '@/lib/allegro';
 
 function isDemoMode() {
   return !process.env.ALLEGRO_CLIENT_ID;
@@ -42,13 +42,13 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: 'Unknown action. Use ?action=status or ?action=init' }, { status: 400 });
 }
 
-// POST /api/allegro/auth — poll for token
+// POST /api/allegro/auth — single-attempt token exchange (client polls)
 export async function POST(req: NextRequest) {
   if (isDemoMode()) {
     return NextResponse.json({ success: true, _demo: true, expires_at: Date.now() + 12 * 3600 * 1000 });
   }
 
-  let body: { device_code: string; interval?: number };
+  let body: { device_code: string };
   try {
     body = await req.json();
   } catch {
@@ -60,8 +60,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const token = await pollDeviceToken(body.device_code, body.interval ?? 5);
-    return NextResponse.json({ success: true, expires_at: token.expires_at });
+    const result = await pollDeviceTokenOnce(body.device_code);
+    if (result.success) {
+      return NextResponse.json({ success: true, expires_at: result.token!.expires_at });
+    }
+    if (result.error === 'authorization_pending') {
+      return NextResponse.json({ pending: true });
+    }
+    return NextResponse.json({ error: result.error }, { status: 500 });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 500 });

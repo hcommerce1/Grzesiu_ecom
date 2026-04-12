@@ -1,3 +1,5 @@
+import { acquireSlot, handleResponse, type Priority } from './rate-limiter';
+
 const BL_API_URL = 'https://api.baselinker.com/connector.php';
 
 function getToken(): string {
@@ -8,9 +10,13 @@ function getToken(): string {
 
 export async function callBaselinker<T = unknown>(
   method: string,
-  parameters: Record<string, unknown> = {}
+  parameters: Record<string, unknown> = {},
+  priority: Priority = 'normal'
 ): Promise<T> {
   const token = getToken();
+
+  // Rate limiter: czeka na slot (sprawdza limit i blokadę tokenu)
+  await acquireSlot(token, priority);
 
   const body = new URLSearchParams();
   body.set('method', method);
@@ -26,10 +32,20 @@ export async function callBaselinker<T = unknown>(
   });
 
   if (!res.ok) {
+    if (res.status === 429) {
+      handleResponse(token, {
+        status: 'ERROR',
+        error_code: 'TOO_MANY_REQUESTS',
+        error_message: `HTTP 429`,
+      });
+    }
     throw new Error(`BaseLinker API HTTP error: ${res.status} ${res.statusText}`);
   }
 
   const json = await res.json();
+
+  // Rate limiter: raportuje response (wykrywa blokadę tokenu)
+  handleResponse(token, json);
 
   if (json.status === 'ERROR') {
     throw new Error(`BaseLinker API error: ${json.error_message} (code: ${json.error_code})`);
@@ -95,9 +111,9 @@ export async function addInventoryProduct(params: Record<string, unknown>) {
   return callBaselinker<{ product_id: number }>('addInventoryProduct', params);
 }
 
-export async function getInventoryProductsData(productIds: string[], inventoryId: number) {
+export async function getInventoryProductsData(productIds: string[], inventoryId: number, priority: Priority = 'normal') {
   return callBaselinker('getInventoryProductsData', {
     inventory_id: inventoryId,
     products: productIds,
-  });
+  }, priority);
 }

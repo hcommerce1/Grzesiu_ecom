@@ -45,18 +45,13 @@ export async function bootstrapBLCache(inventoryId?: number): Promise<BLCache> {
 
   const inventories = await getInventories();
 
-  // Use provided inventory ID, env default, or first available
-  const envInventoryId = process.env.BASELINKER_INVENTORY_ID
-    ? parseInt(process.env.BASELINKER_INVENTORY_ID, 10)
-    : undefined;
-
+  // Use provided inventory ID or first available from API
   const selectedInventoryId =
     inventoryId ??
-    envInventoryId ??
     (inventories[0] as Record<string, unknown>)?.['inventory_id'] as number | undefined;
 
   if (!selectedInventoryId) {
-    throw new Error('No inventory ID available — set BASELINKER_INVENTORY_ID or select an inventory');
+    throw new Error('No inventory ID available — select an inventory first');
   }
 
   const [warehouses, priceGroups, extraFields, manufacturers, integrations, textFieldKeys] =

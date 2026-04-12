@@ -33,9 +33,16 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# google credentials
+google-credentials.json
+arkuszprohow-*.json
+
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# runtime state
+/tmp/

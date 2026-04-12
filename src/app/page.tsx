@@ -1,19 +1,19 @@
 "use client"
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useRef } from "react"
 import { SearchBar } from "@/components/SearchBar"
 import { CollapsibleProductItem, type ScrapedItem } from "@/components/CollapsibleProductItem"
 import { AppHeader } from "@/components/AppHeader"
-import { ProductSearch } from "@/components/ProductSearch"
-import { WorkflowStarter } from "@/components/WorkflowStarter"
+import { EditProductsTab } from "@/components/EditProductsTab"
 import { motion, AnimatePresence } from "framer-motion"
 import { staggerContainer, staggerItem } from "@/components/motion/variants"
-import { Package, Loader2, Plus, Search, BarChart2 } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Package, Loader2, Search, BarChart2, FileSpreadsheet } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { GoogleSheetsTab } from "@/components/GoogleSheetsTab"
+import { AllegroAuthGate } from "@/components/AllegroAuthGate"
 import type { ScrapeResponse } from "@/lib/types"
 
-type Tab = "nowe" | "edytuj"
+type Tab = "nowe" | "edytuj" | "sheets"
 
 let idCounter = 0
 
@@ -21,13 +21,9 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("nowe")
   const [items, setItems] = useState<ScrapedItem[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
-  const [systemPrompt, setSystemPrompt] = useState("")
-  const [showWorkflowStarter, setShowWorkflowStarter] = useState(false)
   const [processedCount, setProcessedCount] = useState(0)
 
   const abortRef = useRef<AbortController | null>(null)
-
-  const handlePromptChange = useCallback((p: string) => setSystemPrompt(p), [])
 
   const handleScrapeBatch = async (urls: string[]) => {
     if (urls.length === 0) return
@@ -54,7 +50,7 @@ export default function Home() {
         const res = await fetch("/api/scrape", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: urls[i], systemPrompt }),
+          body: JSON.stringify({ url: urls[i] }),
           signal: ctrl.signal,
         })
         const data: ScrapeResponse = await res.json()
@@ -97,9 +93,10 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background">
-      <AppHeader onPromptChange={handlePromptChange} />
+      <AppHeader />
 
-      <main className="max-w-[1400px] mx-auto px-6 py-8 space-y-8">
+      <main className="w-full max-w-[1920px] mx-auto px-4 md:px-6 lg:px-10 py-6 space-y-8">
+        <AllegroAuthGate>
         {/* Tab switcher */}
         <div className="flex items-center gap-1 border-b border-border">
           <button
@@ -126,17 +123,20 @@ export default function Home() {
             <Search className="size-4" />
             Edytuj istniejące
           </button>
+          <button
+            onClick={() => setTab("sheets")}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+              tab === "sheets"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <FileSpreadsheet className="size-4" />
+            Google Sheets
+          </button>
 
           <div className="flex-1" />
-
-          <Button
-            size="sm"
-            onClick={() => setShowWorkflowStarter(true)}
-            className="gap-1.5 mb-2"
-          >
-            <Plus className="size-4" />
-            <span className="hidden sm:inline">Ręczna oferta BL</span>
-          </Button>
         </div>
 
         {/* Tab: Nowe produkty */}
@@ -203,19 +203,13 @@ export default function Home() {
         )}
 
         {/* Tab: Edytuj istniejące */}
-        {tab === "edytuj" && <ProductSearch />}
+        {tab === "edytuj" && <EditProductsTab />}
+
+        {/* Tab: Google Sheets */}
+        {tab === "sheets" && <GoogleSheetsTab />}
+        </AllegroAuthGate>
       </main>
 
-      {/* Workflow Starter Modal */}
-      {showWorkflowStarter && (
-        <WorkflowStarter
-          onClose={() => setShowWorkflowStarter(false)}
-          onStarted={({ sourceUrl }) => {
-            setShowWorkflowStarter(false)
-            if (sourceUrl) handleScrapeBatch([sourceUrl])
-          }}
-        />
-      )}
     </div>
   )
 }

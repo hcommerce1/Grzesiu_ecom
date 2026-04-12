@@ -82,6 +82,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Missing categoryId' }, { status: 400 });
   }
 
+  if (!/^\d+$/.test(categoryId)) {
+    return NextResponse.json(
+      { error: `Nieprawidłowe categoryId "${categoryId}" — musi być numeryczne (np. 261467)` },
+      { status: 400 },
+    );
+  }
+
   if (isDemoMode()) {
     return NextResponse.json({
       parameters: MOCK_PARAMETERS,

@@ -1,67 +1,107 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X, CheckCircle2, History, RotateCcw, Edit3 } from "lucide-react"
+import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X, CheckCircle2, ImageIcon, AlertCircle, ChevronRight } from "lucide-react"
 import { CategorySelector } from "./CategorySelector"
-import { ParameterForm } from "./ParameterForm"
-import { FieldSelector } from "./FieldSelector"
+import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
 import { ApprovalDrawer } from "./ApprovalDrawer"
 import { AllegroPreviewFrame } from "./AllegroPreviewFrame"
-import { ClaudeChat } from "./ClaudeChat"
+import { PreviewContainer } from "./previews/PreviewContainer"
+import { ImageManagementStep } from "./ImageManagementStep"
+import { DescriptionGenerationStep } from "./DescriptionGenerationStep"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import type { ProductSession, AllegroCategory, AllegroParameter, BLCache, BLExtraField, ProductData } from "@/lib/types"
+import type {
+  ProductSession,
+  AllegroCategory,
+  AllegroParameter,
+  BLCache,
+  BLExtraField,
+  ProductData,
+  SheetMeta,
+  ParameterMatchResult,
+  ImageMeta,
+  GeneratedDescription,
+  DescriptionInputSnapshot,
+  AutoFillEntry,
+  BLProductType,
+} from "@/lib/types"
 
 interface Props {
   productData: ProductData
   editProductId?: string
+  editProductType?: BLProductType
+  editParentId?: string
   onClose: () => void
+  sheetProductId?: string
+  sheetMeta?: SheetMeta
+  onSheetDone?: (blProductId: number) => void
 }
 
-type Step = "inventory" | "category" | "parameters" | "fields" | "preview" | "ai" | "approval"
+type Step = "inventory" | "category" | "images" | "fields-params" | "description" | "preview" | "approval"
 
 const STEPS: { key: Step; label: string; icon: React.ReactNode }[] = [
   { key: "inventory", label: "Magazyn", icon: <Settings2 className="size-3.5" /> },
   { key: "category", label: "Kategoria", icon: <Tag className="size-3.5" /> },
-  { key: "parameters", label: "Parametry", icon: <Settings2 className="size-3.5" /> },
-  { key: "fields", label: "Pola", icon: <CheckSquare className="size-3.5" /> },
+  { key: "images", label: "Zdjęcia", icon: <ImageIcon className="size-3.5" /> },
+  { key: "fields-params", label: "Parametry", icon: <CheckSquare className="size-3.5" /> },
+  { key: "description", label: "Tytuł i opis", icon: <Sparkles className="size-3.5" /> },
   { key: "preview", label: "Podgląd", icon: <Eye className="size-3.5" /> },
-  { key: "ai", label: "Asystent AI", icon: <Sparkles className="size-3.5" /> },
   { key: "approval", label: "Wyślij", icon: <Send className="size-3.5" /> },
 ]
 
-interface OfferVersion {
-  id: number
-  label: string
-  title: string
-  description: string
-}
-
-export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }: Props) {
+export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone }: Props) {
   const [currentStep, setCurrentStep] = useState<Step>("inventory")
   const [session, setSession] = useState<ProductSession | null>(null)
   const [blCache, setBlCache] = useState<BLCache | null>(null)
   const [parameters, setParameters] = useState<AllegroParameter[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  const [sheetMatchResults, setSheetMatchResults] = useState<ParameterMatchResult[]>([])
+  const [sheetSuggestedValues, setSheetSuggestedValues] = useState<Record<string, string | string[]>>({})
   const [showApproval, setShowApproval] = useState(false)
   const [successId, setSuccessId] = useState<number | null>(null)
   const [selectedInventoryId, setSelectedInventoryId] = useState<number | undefined>()
   const [selectedWarehouse, setSelectedWarehouse] = useState<string | undefined>()
 
-  // Local editable product (for AI chat)
+  // Tytuł
   const [localTitle, setLocalTitle] = useState(productData.title)
-  const [localDescription, setLocalDescription] = useState(productData.description)
+  const [titleCandidates, setTitleCandidates] = useState<string[]>([])
 
-  // Version history for AI step
-  const [versions, setVersions] = useState<OfferVersion[]>([])
+  // Zdjęcia
+  const [imagesMeta, setImagesMeta] = useState<ImageMeta[]>([])
+
+  // Opis strukturalny
+  const [generatedDescription, setGeneratedDescription] = useState<GeneratedDescription | undefined>()
+  const [descriptionSnapshot, setDescriptionSnapshot] = useState<DescriptionInputSnapshot | undefined>()
+
+  // Parametry lokalne (dla synchronizacji z czatem)
+  const [localParameters, setLocalParameters] = useState<Record<string, string | string[]>>({})
+
+  // AI auto-fill
+  const [aiFillStatus, setAiFillStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [aiFillResults, setAiFillResults] = useState<AutoFillEntry[]>([])
+
+  // Navigation & validation
+  const [maxVisitedStep, setMaxVisitedStep] = useState(0)
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
 
   useEffect(() => {
     loadBLCache()
     fetch("/api/product-session")
       .then((r) => r.json())
-      .then((d) => setSession(d.session))
+      .then((d) => {
+        setSession(d.session)
+        // Przywroc dane z sesji jesli istnieja
+        if (d.session?.imagesMeta) setImagesMeta(d.session.imagesMeta)
+        if (d.session?.generatedTitle) setLocalTitle(d.session.generatedTitle)
+        if (d.session?.titleCandidates) setTitleCandidates(d.session.titleCandidates)
+        if (d.session?.generatedDescription) setGeneratedDescription(d.session.generatedDescription)
+        if (d.session?.descriptionInputSnapshot) setDescriptionSnapshot(d.session.descriptionInputSnapshot)
+        if (d.session?.filledParameters) setLocalParameters(d.session.filledParameters)
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function loadBLCache(inventoryId?: number) {
@@ -101,12 +141,33 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
     if (!selectedInventoryId) { setError("Wybierz katalog"); return }
     setLoading(true)
     try {
+      const sheetFieldOverrides = sheetProductId ? {
+        weight: true,
+        dimensions: true,
+        locations: true,
+      } : {}
+
+      // Determine correct mode based on product type
+      let editPatch: Partial<ProductSession> = {}
+      if (editProductId) {
+        if (editProductType === 'variant' && editParentId) {
+          editPatch = { mode: 'variant', parent_id: editParentId, product_id: editProductId }
+        } else if (editProductType === 'bundle') {
+          editPatch = { mode: 'bundle', product_id: editProductId }
+        } else {
+          editPatch = { mode: 'edit', product_id: editProductId }
+        }
+      }
+
       await updateSession({
-        data: { ...productData, title: localTitle, description: localDescription },
+        data: productData,
         images: productData.images,
         inventoryId: selectedInventoryId,
         defaultWarehouse: selectedWarehouse,
-        ...(editProductId ? { mode: "edit", product_id: editProductId } : {}),
+        ...editPatch,
+        ...(sheetProductId ? { sheetProductId } : {}),
+        ...(sheetMeta ? { sheetMeta } : {}),
+        fieldSelection: sheetFieldOverrides,
       })
       setCurrentStep("category")
     } catch (err) {
@@ -123,12 +184,77 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
       const paramsRes = await fetch(`/api/allegro/parameters?categoryId=${cat.id}`)
       const paramsData = await paramsRes.json()
       setParameters(paramsData.parameters ?? [])
+
+      let autoFilledParams: Record<string, string | string[]> = {}
+
+      if (sheetMeta) {
+        try {
+          const matchRes = await fetch("/api/sheets/match-parameters", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ categoryId: cat.id, sheetData: sheetMeta }),
+          })
+          const matchData = await matchRes.json()
+          if (matchData.matchResults) setSheetMatchResults(matchData.matchResults)
+          if (matchData.suggestedValues) {
+            setSheetSuggestedValues(matchData.suggestedValues)
+            autoFilledParams = matchData.suggestedValues
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      if (Object.keys(autoFilledParams).length > 0) {
+        setLocalParameters(prev => ({ ...prev, ...autoFilledParams }))
+      }
+
       await updateSession({
         allegroCategory: cat,
         allegroParameters: paramsData.parameters,
         commissionInfo: paramsData.commissionInfo,
+        ...(Object.keys(autoFilledParams).length > 0 ? { filledParameters: autoFilledParams } : {}),
+        ...(sheetProductId ? { sheetProductId } : {}),
+        ...(sheetMeta ? { sheetMeta } : {}),
       })
-      setCurrentStep("parameters")
+      setCurrentStep("images")
+
+      // Nieblokujący AI auto-fill w tle
+      const fetchedParams: AllegroParameter[] = paramsData.parameters ?? []
+      if (fetchedParams.length > 0) {
+        setAiFillStatus('loading')
+        fetch("/api/ai-autofill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            productData,
+            parameters: fetchedParams,
+            alreadyFilled: autoFilledParams,
+          }),
+        })
+          .then(r => r.json())
+          .then(result => {
+            if (result.error) {
+              setAiFillStatus('error')
+              return
+            }
+            setAiFillResults(result.details ?? [])
+            const aiFilled: Record<string, string | string[]> = result.filled ?? {}
+            if (Object.keys(aiFilled).length > 0) {
+              setLocalParameters(prev => {
+                // Sheet values mają priorytet — AI uzupełnia tylko brakujące
+                const merged = { ...prev }
+                for (const [id, val] of Object.entries(aiFilled)) {
+                  if (!merged[id]) merged[id] = val
+                }
+                updateSession({ filledParameters: merged })
+                return merged
+              })
+            }
+            setAiFillStatus('done')
+          })
+          .catch(() => setAiFillStatus('error'))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Błąd pobierania parametrów")
     } finally {
@@ -136,21 +262,10 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
     }
   }
 
-  async function handleParametersSubmit(values: Record<string, string | string[]>) {
-    await updateSession({ filledParameters: values })
-    setCurrentStep("fields")
-  }
-
   async function handleFieldsChange(selection: Partial<import("@/lib/types").FieldSelection>) {
     await updateSession({ fieldSelection: selection })
   }
 
-  function restoreVersion(v: OfferVersion) {
-    setLocalTitle(v.title)
-    setLocalDescription(v.description)
-  }
-
-  /** Compute preview values for FieldSelector so the user knows what will be sent */
   function buildFieldValues(): Record<string, string> {
     const attrs = productData.attributes ?? {}
     const manufacturer =
@@ -163,21 +278,92 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
       sku: productData.sku || "",
       ean: productData.ean || "",
       asin: productData.sku || "",
-      description: productData.description
-        ? productData.description.slice(0, 60).replace(/\s+/g, " ") + (productData.description.length > 60 ? "…" : "")
-        : "",
-      images: productData.images?.length ? `${productData.images.length} zdjęć` : "",
+      description: generatedDescription?.fullHtml
+        ? `${generatedDescription.sections.length} sekcji`
+        : productData.description
+          ? productData.description.slice(0, 60).replace(/\s+/g, " ") + (productData.description.length > 60 ? "…" : "")
+          : "",
+      images: imagesMeta.filter(i => !i.removed).length
+        ? `${imagesMeta.filter(i => !i.removed).length} zdjęć`
+        : productData.images?.length ? `${productData.images.length} zdjęć` : "",
       prices: priceStr,
       manufacturer_id: manufacturer,
-      category_id: session?.allegroCategory?.name || "",
-      features: session?.filledParameters
-        ? `${Object.keys(session.filledParameters).length} parametrów`
+      category_id: session?.allegroCategory?.id || "",
+      features: Object.keys(localParameters).length
+        ? `${Object.keys(localParameters).length} parametrów`
         : "",
       weight,
     }
   }
 
+  // Synchronizacja parametrów z czatu do sesji
+  function handleParameterChangeFromChat(id: string, value: string | string[]) {
+    setLocalParameters(prev => {
+      const updated = { ...prev, [id]: value }
+      updateSession({ filledParameters: updated })
+      return updated
+    })
+  }
+
   const currentStepIndex = STEPS.findIndex((s) => s.key === currentStep)
+
+  // Update maxVisitedStep when navigating forward
+  useEffect(() => {
+    if (currentStepIndex > maxVisitedStep) {
+      setMaxVisitedStep(currentStepIndex)
+    }
+  }, [currentStepIndex, maxVisitedStep])
+
+  function validateStep(fromIndex: number): { valid: boolean; errors: string[] } {
+    const errors: string[] = []
+    const stepKey = STEPS[fromIndex]?.key
+
+    switch (stepKey) {
+      case 'inventory':
+        if (!selectedInventoryId) errors.push('Wybierz magazyn')
+        break
+      case 'category':
+        if (!session?.allegroCategory) errors.push('Wybierz kategorię Allegro')
+        break
+      case 'images': {
+        const activeImages = imagesMeta.filter(m => !m.removed)
+        if (activeImages.length === 0) errors.push('Dodaj co najmniej 1 zdjęcie')
+        break
+      }
+      case 'fields-params':
+        if (!localTitle?.trim()) errors.push('Uzupełnij tytuł produktu')
+        break
+      case 'description':
+        if (!localTitle?.trim()) errors.push('Uzupełnij tytuł produktu')
+        if (!generatedDescription) errors.push('Wygeneruj opis przed kontynuowaniem')
+        break
+    }
+    return { valid: errors.length === 0, errors }
+  }
+
+  function navigateToStep(targetIndex: number) {
+    setValidationErrors([])
+    // Going backwards — always allowed if visited before
+    if (targetIndex <= currentStepIndex) {
+      setCurrentStep(STEPS[targetIndex].key)
+      return
+    }
+    // Going forward — validate each step in between
+    for (let i = currentStepIndex; i < targetIndex; i++) {
+      const result = validateStep(i)
+      if (!result.valid) {
+        setValidationErrors(result.errors)
+        return
+      }
+    }
+    setCurrentStep(STEPS[targetIndex].key)
+  }
+
+  function handleNextStep() {
+    const nextIndex = currentStepIndex + 1
+    if (nextIndex >= STEPS.length) return
+    navigateToStep(nextIndex)
+  }
 
   function renderStep() {
     switch (currentStep) {
@@ -279,21 +465,24 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
                 Ładowanie parametrów...
               </div>
             )}
-            <CategorySelector onSelect={handleCategorySelect} selectedCategory={session?.allegroCategory} />
+            <CategorySelector onSelect={handleCategorySelect} selectedCategory={session?.allegroCategory} productData={productData} />
           </div>
         )
 
-      case "parameters":
+      case "images":
         return (
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">Wypełnij parametry kategorii Allegro:</p>
-            <ParameterForm
-              parameters={parameters}
-              initialValues={session?.filledParameters ?? {}}
-              onChange={(vals) => updateSession({ filledParameters: vals })}
+            <ImageManagementStep
+              images={productData.images}
+              imagesMeta={imagesMeta}
+              onImagesMetaChange={(meta) => {
+                setImagesMeta(meta)
+                updateSession({ imagesMeta: meta })
+              }}
             />
             <Button
-              onClick={() => handleParametersSubmit(session?.filledParameters ?? {})}
+              onClick={() => setCurrentStep("fields-params")}
+              disabled={imagesMeta.filter(i => !i.removed).length === 0 && productData.images.length === 0}
               className="w-full"
             >
               Dalej →
@@ -301,155 +490,109 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
           </div>
         )
 
-      case "fields":
+      case "fields-params":
         return (
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">Wybierz pola do wysłania do BaseLinker:</p>
-            <FieldSelector
+            <p className="text-sm text-muted-foreground">Skonfiguruj pola i parametry oferty:</p>
+            <FieldsAndParametersStep
               mode={session?.mode ?? "new"}
               extraFields={(blCache?.extraFields ?? []) as BLExtraField[]}
-              initialSelection={session?.fieldSelection}
-              onChange={handleFieldsChange}
-              values={buildFieldValues()}
+              parameters={parameters}
+              initialFieldSelection={session?.fieldSelection}
+              initialParameterValues={localParameters}
+              fieldValues={buildFieldValues()}
+              onFieldSelectionChange={handleFieldsChange}
+              onParameterValuesChange={(vals) => {
+                setLocalParameters(vals)
+                updateSession({ filledParameters: vals })
+              }}
+              sheetMatchResults={sheetMatchResults.length > 0 ? sheetMatchResults : undefined}
+              aiFillResults={aiFillResults.length > 0 ? aiFillResults : undefined}
+              aiFillStatus={aiFillStatus}
             />
-            <Button onClick={() => setCurrentStep("preview")} className="w-full">
-              Podgląd →
+            <Button onClick={() => setCurrentStep("description")} className="w-full gap-2">
+              <Sparkles className="size-4" />
+              Generuj opis →
             </Button>
           </div>
+        )
+
+      case "description":
+        return (
+          <DescriptionGenerationStep
+            title={localTitle}
+            translatedData={{
+              title: productData.title,
+              attributes: productData.attributes,
+            }}
+            imagesMeta={imagesMeta.length > 0 ? imagesMeta : productData.images.map((url, i) => ({
+              url,
+              order: i,
+              removed: false,
+              aiDescription: "",
+              aiConfidence: 0,
+              userDescription: "",
+              isFeatureImage: false,
+              features: [],
+            }))}
+            filledParameters={localParameters}
+            categoryPath={session?.allegroCategory?.path || ""}
+            categoryId={session?.allegroCategory?.id || ""}
+            allegroParameters={parameters}
+            descriptionPrompt={session?.descriptionPrompt}
+            generatedDescription={generatedDescription}
+            previousSnapshot={descriptionSnapshot}
+            titleCandidates={titleCandidates}
+            onDescriptionChange={(desc) => {
+              setGeneratedDescription(desc)
+              updateSession({ generatedDescription: desc })
+            }}
+            onSnapshotChange={(snapshot) => {
+              setDescriptionSnapshot(snapshot)
+              updateSession({ descriptionInputSnapshot: snapshot })
+            }}
+            onTitleChange={(title) => {
+              setLocalTitle(title)
+              updateSession({ generatedTitle: title })
+            }}
+            onCandidatesChange={setTitleCandidates}
+            onParameterChange={handleParameterChangeFromChat}
+          />
         )
 
       case "preview":
         return (
           <div className="space-y-4">
-            <AllegroPreviewFrame />
-            <Button onClick={() => setCurrentStep("ai")} className="w-full gap-2">
-              <Sparkles className="size-4" />
-              Asystent AI →
-            </Button>
-          </div>
-        )
-
-      case "ai":
-        return (
-          <div className="grid grid-cols-[1fr_420px] gap-5" style={{ minHeight: 580 }}>
-            {/* ─── Left: editable offer preview ─── */}
-            <div className="flex flex-col gap-4 overflow-y-auto pr-1">
-              {/* Version history */}
-              {versions.length > 0 && (
-                <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-2">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-muted uppercase tracking-wider">
-                    <History className="size-3.5" />
-                    Historia zmian
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {versions.map((v) => (
-                      <button
-                        key={v.id}
-                        onClick={() => restoreVersion(v)}
-                        className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-border bg-background hover:bg-accent hover:border-primary transition-colors"
-                        title={`Przywróć: ${v.title.slice(0, 60)}`}
-                      >
-                        <RotateCcw className="size-3 text-muted-foreground" />
-                        {v.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Editable title */}
-              <div className="space-y-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-muted uppercase tracking-wider">
-                  <Edit3 className="size-3" />
-                  Tytuł oferty
-                </label>
-                <textarea
-                  value={localTitle}
-                  onChange={(e) => setLocalTitle(e.target.value)}
-                  rows={2}
-                  className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20"
-                />
-              </div>
-
-              {/* Editable description */}
-              <div className="flex-1 flex flex-col space-y-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-muted uppercase tracking-wider">
-                  <Edit3 className="size-3" />
-                  Opis oferty
-                </label>
-                <textarea
-                  value={localDescription}
-                  onChange={(e) => setLocalDescription(e.target.value)}
-                  className="flex-1 resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20"
-                  style={{ minHeight: 200 }}
-                />
-              </div>
-
-              {/* Images strip */}
-              {productData.images?.length > 0 && (
-                <div className="space-y-1.5">
-                  <div className="text-xs font-semibold text-muted uppercase tracking-wider">
-                    Zdjęcia ({productData.images.length})
-                  </div>
-                  <div className="flex gap-2 flex-wrap">
-                    {productData.images.slice(0, 10).map((img, i) => (
-                      <img
-                        key={i}
-                        src={img}
-                        alt=""
-                        className="size-14 object-cover rounded-lg border border-border"
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                      />
-                    ))}
-                    {productData.images.length > 10 && (
-                      <div className="size-14 rounded-lg border border-border flex items-center justify-center text-xs text-muted">
-                        +{productData.images.length - 10}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <Button
-                onClick={async () => {
-                  await updateSession({
-                    data: { ...productData, title: localTitle, description: localDescription },
-                  })
-                  setCurrentStep("approval")
-                }}
-                className="w-full"
-              >
-                Zatwierdź i wyślij →
-              </Button>
-            </div>
-
-            {/* ─── Right: ClaudeChat ─── */}
-            <ClaudeChat
-              currentTitle={localTitle}
-              currentDescription={localDescription}
-              currentImages={productData.images}
-              onUpdate={async ({ title, description }) => {
-                // Save current state as a version before applying changes
-                setVersions((prev) => [
-                  ...prev,
-                  {
-                    id: Date.now(),
-                    label: `Zmiana ${prev.length + 1}`,
-                    title: localTitle,
-                    description: localDescription,
-                  },
-                ])
-                const newTitle = title || localTitle
-                const newDesc = description || localDescription
-                if (title) setLocalTitle(newTitle)
-                if (description) setLocalDescription(newDesc)
+            {generatedDescription?.fullHtml ? (
+              <PreviewContainer
+                title={localTitle}
+                fullHtml={generatedDescription.fullHtml}
+                imagesMeta={imagesMeta.length > 0 ? imagesMeta : productData.images.map((url, i) => ({
+                  url, order: i, removed: false, aiDescription: "", aiConfidence: 0,
+                  userDescription: "", isFeatureImage: false, features: [],
+                }))}
+                parameters={localParameters}
+              />
+            ) : (
+              <AllegroPreviewFrame />
+            )}
+            <Button
+              onClick={async () => {
+                // Zapisz wszystkie dane do sesji przed wysylka
                 await updateSession({
-                  data: { ...productData, title: newTitle, description: newDesc },
+                  data: {
+                    ...productData,
+                    title: localTitle,
+                    description: generatedDescription?.fullHtml || productData.description,
+                    images: imagesMeta.filter(i => !i.removed).map(i => i.url),
+                  },
                 })
+                setCurrentStep("approval")
               }}
-              className="flex flex-col"
-              style={{ height: "100%" } as React.CSSProperties}
-            />
+              className="w-full"
+            >
+              Zatwierdź i wyślij →
+            </Button>
           </div>
         )
 
@@ -492,7 +635,9 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
           <div className="flex items-center gap-2">
             <Tag className="size-4 text-primary" />
             <span className="text-sm font-semibold">
-              {editProductId ? "Edycja oferty" : "Nowa oferta"} — BaseLinker
+              {editProductId
+                ? editProductType === 'variant' ? "Edycja wariantu" : "Edycja oferty"
+                : "Nowa oferta"} — BaseLinker
             </span>
             {editProductId && (
               <Badge variant="warning">ID: {editProductId}</Badge>
@@ -511,19 +656,21 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
           {STEPS.map((step, i) => {
             const isDone = i < currentStepIndex
             const isActive = step.key === currentStep
-            const isClickable = i <= currentStepIndex
+            const isClickable = i <= maxVisitedStep || i === maxVisitedStep + 1
 
             return (
               <button
                 key={step.key}
-                onClick={() => isClickable && setCurrentStep(step.key)}
+                onClick={() => isClickable && navigateToStep(i)}
                 className={cn(
                   "flex-1 flex items-center justify-center gap-1 px-2 py-2.5 text-[11px] font-medium transition-colors whitespace-nowrap min-w-max",
                   isActive
                     ? "text-primary border-b-2 border-primary bg-accent/30"
                     : isDone
                     ? "text-green-600 hover:bg-muted cursor-pointer"
-                    : "text-muted-foreground cursor-default"
+                    : isClickable
+                    ? "text-muted-foreground hover:bg-muted/50 cursor-pointer"
+                    : "text-muted-foreground/40 cursor-default"
                 )}
               >
                 {isDone ? <CheckCircle2 className="size-3.5 text-green-600 shrink-0" /> : step.icon}
@@ -533,18 +680,55 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, onClose }:
           })}
         </div>
 
+        {/* Validation errors */}
+        {validationErrors.length > 0 && (
+          <div className="mx-5 mt-3 flex items-start gap-2 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">
+            <AlertCircle className="size-4 shrink-0 mt-0.5" />
+            <div>
+              {validationErrors.map((err, i) => (
+                <p key={i}>{err}</p>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Step content */}
-        <div className="p-5">{renderStep()}</div>
+        <div className="p-5">
+          {renderStep()}
+
+          {/* Next step button */}
+          {currentStep !== 'approval' && (
+            <div className="mt-6 flex justify-end">
+              <Button onClick={handleNextStep} className="gap-1.5">
+                Dalej
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
 
       {showApproval && session && (
         <ApprovalDrawer
           session={session}
           onClose={() => setShowApproval(false)}
-          onApproved={(id) => {
+          onApproved={async (id) => {
             setSuccessId(id)
             setShowApproval(false)
             setCurrentStep("approval")
+
+            if (sheetProductId) {
+              try {
+                await fetch(`/api/sheets/products/${encodeURIComponent(sheetProductId)}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: "done", bl_product_id: String(id) }),
+                })
+              } catch {
+                // Non-fatal
+              }
+              onSheetDone?.(id)
+            }
           }}
         />
       )}

@@ -56,12 +56,30 @@ export const extractAllegro: SiteExtractor = async (page, url) => {
             });
         }
 
-        // 5. EAN from body text
+        // 5. Category from breadcrumbs
+        let sourceCategory = '';
+        const breadcrumbEl = document.querySelector('[data-box-name="Breadcrumb"], nav[aria-label="breadcrumb"], [data-role="breadcrumb"]');
+        if (breadcrumbEl) {
+            const crumbs = Array.from(breadcrumbEl.querySelectorAll('a, span'))
+                .map(el => el.textContent?.trim())
+                .filter(Boolean);
+            if (crumbs.length > 1) {
+                // Skip "Allegro" / first item, take the rest
+                sourceCategory = crumbs.slice(1).join(' > ');
+            }
+        }
+        if (!sourceCategory) {
+            // Fallback: try meta or dataLayer
+            const catMeta = document.querySelector('meta[property="product:category"]')?.getAttribute('content');
+            if (catMeta) sourceCategory = catMeta;
+        }
+
+        // 6. EAN from body text
         const bodyText = document.body.textContent ?? '';
         const eanMatch = bodyText.match(/EAN[:\s]*(\d{8,13})/i);
         const ean: string = eanMatch?.[1] ?? '';
 
-        return { title, price, currency, sku, images, description, attributes, ean };
+        return { title, price, currency, sku, images, description, attributes: { ...attributes, ...(sourceCategory ? { _sourceCategory: sourceCategory } : {}) }, ean };
     });
 
     return { ...data, url };

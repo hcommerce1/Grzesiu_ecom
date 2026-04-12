@@ -1,11 +1,13 @@
 import type { ProductData, SiteExtractor } from '../types';
 import { formatDescriptionHtml, isValidImageUrl } from './utils';
+import { isIconOrLogo } from '../scraper';
 
 export const extractGeneric: SiteExtractor = async (page, url) => {
-    const data = await page.evaluate(({ formatDescriptionHtmlStr, isValidImageUrlStr }) => {
+    const data = await page.evaluate(({ formatDescriptionHtmlStr, isValidImageUrlStr, isIconOrLogoStr }) => {
         // Hydrate utility functions inside the browser context
         const formatDescriptionHtml = new Function('return ' + formatDescriptionHtmlStr)() as (element: HTMLElement) => string;
         const isValidImageUrl = new Function('return ' + isValidImageUrlStr)() as (url: string) => boolean;
+        const isIconOrLogo = new Function('return ' + isIconOrLogoStr)() as (url: string) => boolean;
 
         function extractTitle(): string {
             const commonSelectors = [
@@ -37,8 +39,9 @@ export const extractGeneric: SiteExtractor = async (page, url) => {
             );
             productImgs.forEach((img) => {
                 const el = img as HTMLImageElement;
+                if (el.naturalWidth > 0 && el.naturalWidth < 50 && el.naturalHeight > 0 && el.naturalHeight < 50) return;
                 const src = el.dataset.src || el.dataset.lazySrc || el.src;
-                if (src && isValidImageUrl(src) && !src.includes('sprite') && !src.includes('1x1')) {
+                if (src && isValidImageUrl(src) && !src.includes('sprite') && !src.includes('1x1') && !isIconOrLogo(src)) {
                     images.add(src);
                 }
             });
@@ -193,7 +196,8 @@ export const extractGeneric: SiteExtractor = async (page, url) => {
         };
     }, {
         formatDescriptionHtmlStr: formatDescriptionHtml.toString(),
-        isValidImageUrlStr: isValidImageUrl.toString()
+        isValidImageUrlStr: isValidImageUrl.toString(),
+        isIconOrLogoStr: isIconOrLogo.toString(),
     });
 
     return { ...data, url };

@@ -41,6 +41,63 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
     return data.choices?.[0]?.message?.content || '';
 }
 
+/**
+ * Tlumaczy tylko tytul i atrybuty (BEZ generowania opisu).
+ * Uzyj tego w nowym flow, gdzie opis generowany jest osobno.
+ */
+export async function translateProductBasic(product: ProductData): Promise<ProductData> {
+    if (!OPENAI_API_KEY) {
+        console.warn('No OPENAI_API_KEY set — skipping translation.');
+        return product;
+    }
+
+    const basicPrompt = `Na podstawie poniższych danych produktu:
+1. Przetłumacz tytuł produktu na polski (naturalnie brzmiące tłumaczenie, NIE tytuł aukcji Allegro)
+2. Przetłumacz wszystkie atrybuty (klucze i wartości) na polski
+3. Przetłumacz opis na polski (wierne tłumaczenie, nie twórz opisu sprzedażowego)
+
+Pisz wyłącznie po polsku. Zachowaj sens i dokładność tłumaczenia.
+
+Zwróć TYLKO JSON:
+{
+  "title": "przetłumaczony tytuł",
+  "description": "przetłumaczony opis",
+  "attributes": { "klucz_po_polsku": "wartość_po_polsku", ... }
+}`;
+
+    try {
+        const payload = {
+            title: product.title,
+            description: product.description,
+            attributes: product.attributes,
+        };
+
+        const messages: ChatMessage[] = [
+            { role: 'system', content: basicPrompt },
+            {
+                role: 'user',
+                content: `Przetłumacz poniższe dane produktu na polski:\n\n${JSON.stringify(payload, null, 2)}`,
+            },
+        ];
+
+        const responseText = await callLLM(messages);
+        const translated: TranslationResult = JSON.parse(responseText);
+
+        return {
+            ...product,
+            title: translated.title || product.title,
+            description: translated.description || product.description,
+            attributes: translated.attributes || product.attributes,
+        };
+    } catch (err) {
+        console.error('LLM basic translation failed:', err);
+        throw err;
+    }
+}
+
+/**
+ * Pelne tlumaczenie + generowanie opisu sprzedazowego (stary flow, fallback).
+ */
 export async function translateProduct(product: ProductData, customPrompt?: string): Promise<ProductData> {
     if (!OPENAI_API_KEY) {
         console.warn('No OPENAI_API_KEY set — skipping translation.');

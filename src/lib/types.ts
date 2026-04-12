@@ -160,4 +160,184 @@ export interface ProductSession {
   defaultWarehouse?: string;
   fieldSelection?: Partial<FieldSelection>;
   ready: boolean;
+  // Image management & description generation
+  imagesMeta?: ImageMeta[];
+  generatedTitle?: string;
+  titleCandidates?: string[];
+  generatedDescription?: GeneratedDescription;
+  descriptionInputSnapshot?: DescriptionInputSnapshot;
+  descriptionPrompt?: string;
+  // Google Sheets integration
+  sheetProductId?: string;
+  sheetMeta?: SheetMeta;
+}
+
+// ─── Google Sheets Types ───
+
+export interface SheetMeta {
+  uwagiKrotkie: string;
+  uwagiMagazynowe: string;
+  zdjecie: string;
+  paleta: string;
+  stanTechniczny: string;
+  kolor: string;
+  opakowanie: string;
+  rozmiarGabaryt: string;
+  model: string;
+  waga: string;
+  dlugosc: string;
+  szerokosc: string;
+  wysokosc: string;
+}
+
+export interface ParameterMatchResult {
+  parameterId: string;
+  parameterName: string;
+  sheetColumn: string;
+  sheetValue: string;
+  matchedOptionId: string | null;
+  matchedOptionValue: string | null;
+  confidence: number;
+  matchType: 'exact' | 'normalized' | 'contains' | 'fuzzy' | 'direct' | 'none';
+}
+
+// ─── Image & Description Generation Types ───
+
+export interface ImageMeta {
+  url: string
+  order: number
+  removed: boolean
+  aiDescription: string
+  aiConfidence: number
+  userDescription: string
+  isFeatureImage: boolean
+  features: string[]
+  uploadedVia?: 'r2' | 'cloudinary'
+}
+
+export interface DescriptionSection {
+  id: string
+  imageUrls: string[]
+  heading: string
+  bodyHtml: string
+  layout: 'image-text' | 'images-only'
+}
+
+export interface GeneratedDescription {
+  sections: DescriptionSection[]
+  fullHtml: string
+  generatedAt: string
+  inputHash: string
+}
+
+export interface DescriptionInputSnapshot {
+  title: string
+  imagesMeta: ImageMeta[]
+  filledParameters: Record<string, string | string[]>
+  categoryId: string
+  translatedAttributes: Record<string, string>
+}
+
+export type ChangeSeverity = 'none' | 'minor' | 'major'
+
+export interface ChangeDetail {
+  field: string
+  label: string
+  severity: 'minor' | 'major'
+}
+
+export interface ChangeClassification {
+  severity: ChangeSeverity
+  changes: ChangeDetail[]
+}
+
+export type ChatActionType = 'update_title' | 'update_parameter' | 'update_section' | 'regenerate_description' | 'expand_section' | 'request_scrape' | 'reorder_section_images'
+
+export interface ChatAction {
+  type: ChatActionType
+  title?: string
+  parameterId?: string
+  parameterValue?: string | string[]
+  sectionId?: string
+  heading?: string
+  bodyHtml?: string
+  scrapeUrl?: string
+  /** For reorder_section_images: new ordered list of image URLs */
+  imageUrls?: string[]
+}
+
+// ─── Description Versioning ───
+
+export interface DescriptionVersion {
+  sections: DescriptionSection[]
+  fullHtml: string
+  title: string
+  timestamp: string
+  label?: string
+}
+
+// ─── AI Auto-Fill Types ───
+
+export interface AutoFillEntry {
+  parameterId: string;
+  value: string | string[];
+  confidence: number;
+  source: string;
+}
+
+export interface AutoFillResult {
+  filled: Record<string, string | string[]>;
+  details: AutoFillEntry[];
+  unfilled: string[];
+}
+
+// ─── Edit Products Tab Types ───
+
+export type BLProductType = 'basic' | 'parent' | 'variant' | 'bundle';
+
+export interface BLProductListItem {
+  id: string;
+  ean: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  price: number;
+  thumbnailUrl: string | null;
+  manufacturerId: number;
+  manufacturerName: string;
+  productType: BLProductType;
+  parentId?: string;
+  isBundle: boolean;
+}
+
+// ─── Image Generation Types ───
+
+export type ImageGenIntent = 'background_removal' | 'simple_edit' | 'generation' | 'context_edit';
+export type ImageGenProvider = 'removebg' | 'replicate' | 'nanobananapro' | 'fluxcontextpro';
+export type ImageGenPreference = 'nanobananapro' | 'fluxcontextpro';
+
+export interface PromptClassification {
+  intent: ImageGenIntent;
+  recommendedProvider: ImageGenProvider;
+  translatedPrompt: string;
+  originalPrompt: string;
+  confidence: number;
+  suggestion?: string;
+  isValid: boolean;
+  rejectionReason?: string;
+}
+
+export interface ImageGenRequest {
+  prompt: string;
+  sourceImageUrl?: string;
+  provider?: ImageGenProvider;
+  preference?: ImageGenPreference;
+}
+
+export interface ImageGenResult {
+  success: boolean;
+  imageUrl?: string;
+  provider: ImageGenProvider;
+  error?: string;
+  costEstimate?: string;
 }

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { scrapeProduct } from '@/lib/scraper';
-import { translateProduct } from '@/lib/translator';
+import { translateProductBasic, translateProduct } from '@/lib/translator';
 
-export const maxDuration = 120; // Allow up to 120s for scraping + translation
+export const maxDuration = 180; // Allow up to 180s for scraping + translation
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
@@ -26,7 +26,11 @@ export async function POST(request: NextRequest) {
         if (result.success) {
             // Translate product data to Polish
             try {
-                const translatedData = await translateProduct(result.data, systemPrompt);
+                // Nowy flow: tłumaczenie bez generowania opisu (opis generowany osobno, później)
+                // Jeśli podano systemPrompt, użyj starego flow (fallback)
+                const translatedData = systemPrompt
+                    ? await translateProduct(result.data, systemPrompt)
+                    : await translateProductBasic(result.data);
                 return NextResponse.json({
                     success: true,
                     data: translatedData,
@@ -47,7 +51,9 @@ export async function POST(request: NextRequest) {
                 result.errorType === 'INVALID_URL' ? 400 :
                     result.errorType === 'TIMEOUT' ? 504 : 500;
 
-        return NextResponse.json(result, { status: statusCode });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { _internalError, ...publicResult } = result as any;
+        return NextResponse.json(publicResult, { status: statusCode });
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Internal server error';
         return NextResponse.json(
