@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X, CheckCircle2, ImageIcon, AlertCircle, ChevronRight } from "lucide-react"
 import { CategorySelector } from "./CategorySelector"
 import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
@@ -8,9 +8,11 @@ import { ApprovalDrawer } from "./ApprovalDrawer"
 import { PreviewContainer } from "./previews/PreviewContainer"
 import { ImageManagementStep } from "./ImageManagementStep"
 import { DescriptionGenerationStep } from "./DescriptionGenerationStep"
+import { ClaudeChat } from "./ClaudeChat"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { compileSectionsToHtml } from "@/lib/description-utils"
 import type {
   ProductSession,
   AllegroCategory,
@@ -25,6 +27,7 @@ import type {
   DescriptionInputSnapshot,
   AutoFillEntry,
   BLProductType,
+  TargetableSection,
 } from "@/lib/types"
 
 interface Props {
@@ -38,14 +41,13 @@ interface Props {
   onSheetDone?: (blProductId: number) => void
 }
 
-type Step = "inventory" | "category" | "images" | "fields-params" | "description" | "preview" | "approval"
+type Step = "inventory" | "category" | "images" | "fields-params" | "preview" | "approval"
 
 const STEPS: { key: Step; label: string; icon: React.ReactNode }[] = [
   { key: "inventory", label: "Magazyn", icon: <Settings2 className="size-3.5" /> },
   { key: "category", label: "Kategoria", icon: <Tag className="size-3.5" /> },
   { key: "images", label: "Zdjęcia", icon: <ImageIcon className="size-3.5" /> },
   { key: "fields-params", label: "Parametry", icon: <CheckSquare className="size-3.5" /> },
-  { key: "description", label: "Tytuł i opis", icon: <Sparkles className="size-3.5" /> },
   { key: "preview", label: "Podgląd", icon: <Eye className="size-3.5" /> },
   { key: "approval", label: "Wyślij", icon: <Send className="size-3.5" /> },
 ]
@@ -82,6 +84,59 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   const [aiFillStatus, setAiFillStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [aiFillResults, setAiFillResults] = useState<AutoFillEntry[]>([])
 
+  // Pola dodatkowe
+  const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>({})
+
+  // Bundle
+  const [isBundle, setIsBundle] = useState(editProductType === 'bundle')
+  const [bundleProducts, setBundleProducts] = useState<Record<string, number>>({})
+
+  // Section targeting
+  const [targetedSections, setTargetedSections] = useState<TargetableSection[]>([])
+
+  const toggleTargetedSection = useCallback((section: TargetableSection) => {
+    setTargetedSections(prev => {
+      const exists = prev.find(s => s.id === section.id)
+      if (exists) return prev.filter(s => s.id !== section.id)
+      return [...prev, section]
+    })
+  }, [])
+
+  // Chat section handlers (for ClaudeChat operating on generatedDescription)
+  const handleChatSectionUpdate = useCallback(
+    (sectionId: string, heading?: string, bodyHtml?: string) => {
+      if (!generatedDescription) return
+      const updated = generatedDescription.sections.map(s => {
+        if (s.id !== sectionId) return s
+        return {
+          ...s,
+          heading: heading !== undefined ? heading : s.heading,
+          bodyHtml: bodyHtml !== undefined ? bodyHtml : s.bodyHtml,
+        }
+      })
+      const fullHtml = compileSectionsToHtml(updated)
+      const desc = { ...generatedDescription, sections: updated, fullHtml }
+      setGeneratedDescription(desc)
+      updateSession({ generatedDescription: desc })
+    },
+    [generatedDescription],
+  )
+
+  const handleChatSectionImageReorder = useCallback(
+    (sectionId: string, imageUrls: string[]) => {
+      if (!generatedDescription) return
+      const updated = generatedDescription.sections.map(s => {
+        if (s.id !== sectionId) return s
+        return { ...s, imageUrls }
+      })
+      const fullHtml = compileSectionsToHtml(updated)
+      const desc = { ...generatedDescription, sections: updated, fullHtml }
+      setGeneratedDescription(desc)
+      updateSession({ generatedDescription: desc })
+    },
+    [generatedDescription],
+  )
+
   // Navigation & validation
   const [maxVisitedStep, setMaxVisitedStep] = useState(0)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
@@ -93,12 +148,23 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       .then((d) => {
         setSession(d.session)
         // Przywroc dane z sesji jesli istnieja
-        if (d.session?.imagesMeta) setImagesMeta(d.session.imagesMeta)
+        if (d.session?.imagesMeta) {
+          setImagesMeta(d.session.imagesMeta)
+        } else if (productData.images.length > 0) {
+          setImagesMeta(productData.images.map((url, i) => ({
+            url, order: i, removed: false, aiDescription: '',
+            aiConfidence: 0, userDescription: '', isFeatureImage: false, features: [],
+          })))
+        }
         if (d.session?.generatedTitle) setLocalTitle(d.session.generatedTitle)
         if (d.session?.titleCandidates) setTitleCandidates(d.session.titleCandidates)
         if (d.session?.generatedDescription) setGeneratedDescription(d.session.generatedDescription)
         if (d.session?.descriptionInputSnapshot) setDescriptionSnapshot(d.session.descriptionInputSnapshot)
         if (d.session?.filledParameters) setLocalParameters(d.session.filledParameters)
+        if (d.session?.allegroParameters) setParameters(d.session.allegroParameters)
+        if (d.session?.extraFieldValues) setExtraFieldValues(d.session.extraFieldValues)
+        if (d.session?.is_bundle != null) setIsBundle(d.session.is_bundle)
+        if (d.session?.bundle_products) setBundleProducts(d.session.bundle_products)
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -126,14 +192,26 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   }
 
   async function updateSession(patch: Partial<ProductSession>) {
-    const res = await fetch("/api/product-session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    })
-    const data = await res.json()
-    setSession(data.session)
-    return data.session as ProductSession
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10_000)
+    try {
+      const res = await fetch("/api/product-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+        signal: controller.signal,
+      })
+      const data = await res.json()
+      setSession(data.session)
+      return data.session as ProductSession
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        console.error('[Session] updateSession timeout po 10s')
+      }
+      throw err
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   async function handleInventoryConfirm() {
@@ -176,22 +254,54 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }
 
+  async function handleCategoryReset() {
+    await updateSession({
+      allegroCategory: undefined,
+      ...(sheetProductId ? { sheetProductId } : {}),
+      ...(sheetMeta ? { sheetMeta } : {}),
+    })
+    setParameters([])
+  }
+
   async function handleCategorySelect(cat: AllegroCategory) {
     setLoading(true)
     setError("")
+
+    // Natychmiast zapisz kategorię w sesji, żeby UI ją pokazał
+    await updateSession({
+      allegroCategory: cat,
+      ...(sheetProductId ? { sheetProductId } : {}),
+      ...(sheetMeta ? { sheetMeta } : {}),
+    })
+
     try {
+      console.log(`[Category] Fetching parameters for category ${cat.id} (${cat.name})...`)
+      const t0 = performance.now()
       const paramsRes = await fetch(`/api/allegro/parameters?categoryId=${cat.id}`)
+      console.log(`[Category] Parameters response: ${paramsRes.status} in ${Math.round(performance.now() - t0)}ms`)
+
+      if (!paramsRes.ok) {
+        const errText = await paramsRes.text()
+        throw new Error(`HTTP ${paramsRes.status}: ${errText}`)
+      }
+
       const paramsData = await paramsRes.json()
+
+      if (paramsData.error) {
+        throw new Error(paramsData.error)
+      }
+
+      console.log(`[Category] Got ${(paramsData.parameters ?? []).length} parameters`)
       setParameters(paramsData.parameters ?? [])
 
       let autoFilledParams: Record<string, string | string[]> = {}
 
-      if (sheetMeta) {
+      if (sheetMeta && paramsData.parameters?.length > 0) {
         try {
           const matchRes = await fetch("/api/sheets/match-parameters", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ categoryId: cat.id, sheetData: sheetMeta }),
+            body: JSON.stringify({ categoryId: cat.id, sheetData: sheetMeta, parameters: paramsData.parameters }),
           })
           const matchData = await matchRes.json()
           if (matchData.matchResults) setSheetMatchResults(matchData.matchResults)
@@ -237,14 +347,22 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               setAiFillStatus('error')
               return
             }
-            setAiFillResults(result.details ?? [])
+            const details: AutoFillEntry[] = result.details ?? []
+            setAiFillResults(details)
             const aiFilled: Record<string, string | string[]> = result.filled ?? {}
+            const requiredParamIds = new Set(fetchedParams.filter(p => p.required).map(p => p.id))
             if (Object.keys(aiFilled).length > 0) {
               setLocalParameters(prev => {
                 // Sheet values mają priorytet — AI uzupełnia tylko brakujące
                 const merged = { ...prev }
                 for (const [id, val] of Object.entries(aiFilled)) {
-                  if (!merged[id]) merged[id] = val
+                  if (merged[id]) continue // sheet priorytet
+                  const detail = details.find(d => d.parameterId === id)
+                  const confidence = detail?.confidence ?? 0
+                  // Wymagane parametry: auto-apply tylko przy wysokiej pewności (>=0.8)
+                  // Reszta zostanie pokazana jako sugestia z przyciskiem "Zastosuj"
+                  if (requiredParamIds.has(id) && confidence < 0.8) continue
+                  merged[id] = val
                 }
                 updateSession({ filledParameters: merged })
                 return merged
@@ -274,6 +392,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
     return {
       name: localTitle,
+      is_bundle: isBundle ? "Tak (zestaw)" : "Nie (podstawowy)",
       sku: productData.sku || "",
       ean: productData.ean || "",
       asin: productData.sku || "",
@@ -330,11 +449,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         break
       }
       case 'fields-params':
-        if (!localTitle?.trim()) errors.push('Uzupełnij tytuł produktu')
         break
-      case 'description':
-        if (!localTitle?.trim()) errors.push('Uzupełnij tytuł produktu')
-        if (!generatedDescription) errors.push('Wygeneruj opis przed kontynuowaniem')
+      case 'preview':
         break
     }
     return { valid: errors.length === 0, errors }
@@ -464,7 +580,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 Ładowanie parametrów...
               </div>
             )}
-            <CategorySelector onSelect={handleCategorySelect} selectedCategory={session?.allegroCategory} productData={productData} />
+            <CategorySelector onSelect={handleCategorySelect} onReset={handleCategoryReset} selectedCategory={session?.allegroCategory} productData={productData} />
           </div>
         )
 
@@ -508,78 +624,78 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               sheetMatchResults={sheetMatchResults.length > 0 ? sheetMatchResults : undefined}
               aiFillResults={aiFillResults.length > 0 ? aiFillResults : undefined}
               aiFillStatus={aiFillStatus}
+              initialExtraFieldValues={extraFieldValues}
+              onExtraFieldValuesChange={(vals) => {
+                setExtraFieldValues(vals)
+                updateSession({ extraFieldValues: vals })
+              }}
+              isBundle={isBundle}
+              onIsBundleChange={(val) => {
+                setIsBundle(val)
+                if (!val) setBundleProducts({})
+                updateSession({ is_bundle: val, bundle_products: val ? bundleProducts : {} })
+              }}
+              bundleProducts={bundleProducts}
+              onBundleProductsChange={(val) => {
+                setBundleProducts(val)
+                updateSession({ bundle_products: val })
+              }}
+              inventoryId={selectedInventoryId}
             />
-            <Button onClick={() => setCurrentStep("description")} className="w-full gap-2">
-              <Sparkles className="size-4" />
-              Generuj opis →
+            <Button onClick={() => setCurrentStep("preview")} className="w-full gap-2">
+              <Eye className="size-4" />
+              Podgląd i opis →
             </Button>
           </div>
-        )
-
-      case "description":
-        return (
-          <DescriptionGenerationStep
-            title={localTitle}
-            translatedData={{
-              title: productData.title,
-              attributes: productData.attributes,
-            }}
-            imagesMeta={imagesMeta.length > 0 ? imagesMeta : productData.images.map((url, i) => ({
-              url,
-              order: i,
-              removed: false,
-              aiDescription: "",
-              aiConfidence: 0,
-              userDescription: "",
-              isFeatureImage: false,
-              features: [],
-            }))}
-            filledParameters={localParameters}
-            categoryPath={session?.allegroCategory?.path || ""}
-            categoryId={session?.allegroCategory?.id || ""}
-            allegroParameters={parameters}
-            descriptionPrompt={session?.descriptionPrompt}
-            generatedDescription={generatedDescription}
-            previousSnapshot={descriptionSnapshot}
-            titleCandidates={titleCandidates}
-            onDescriptionChange={(desc) => {
-              setGeneratedDescription(desc)
-              updateSession({ generatedDescription: desc })
-            }}
-            onSnapshotChange={(snapshot) => {
-              setDescriptionSnapshot(snapshot)
-              updateSession({ descriptionInputSnapshot: snapshot })
-            }}
-            onTitleChange={(title) => {
-              setLocalTitle(title)
-              updateSession({ generatedTitle: title })
-            }}
-            onCandidatesChange={setTitleCandidates}
-            onParameterChange={handleParameterChangeFromChat}
-          />
         )
 
       case "preview":
         return (
           <div className="space-y-4">
-            {generatedDescription?.fullHtml ? (
-              <PreviewContainer
-                title={localTitle}
-                fullHtml={generatedDescription.fullHtml}
-                imagesMeta={imagesMeta.length > 0 ? imagesMeta : productData.images.map((url, i) => ({
-                  url, order: i, removed: false, aiDescription: "", aiConfidence: 0,
-                  userDescription: "", isFeatureImage: false, features: [],
-                }))}
-                parameters={localParameters}
-              />
-            ) : (
-              <div className="border border-border rounded-xl p-8 text-center text-muted text-sm">
-                Wygeneruj opis, aby zobaczyć podgląd oferty.
-              </div>
-            )}
+            <DescriptionGenerationStep
+              title={localTitle}
+              translatedData={{
+                title: productData.title,
+                attributes: productData.attributes,
+              }}
+              imagesMeta={imagesMeta}
+              filledParameters={localParameters}
+              categoryPath={session?.allegroCategory?.path || ""}
+              categoryId={session?.allegroCategory?.id || ""}
+              descriptionPrompt={session?.descriptionPrompt}
+              generatedDescription={generatedDescription}
+              previousSnapshot={descriptionSnapshot}
+              titleCandidates={titleCandidates}
+              onDescriptionChange={(desc) => {
+                setGeneratedDescription(desc)
+                updateSession({ generatedDescription: desc })
+              }}
+              onSnapshotChange={(snapshot) => {
+                setDescriptionSnapshot(snapshot)
+                updateSession({ descriptionInputSnapshot: snapshot })
+              }}
+              onTitleChange={(title) => {
+                setLocalTitle(title)
+                updateSession({ generatedTitle: title })
+              }}
+              onCandidatesChange={setTitleCandidates}
+              onParameterChange={handleParameterChangeFromChat}
+              targetedSections={targetedSections}
+              onSectionTargetToggle={toggleTargetedSection}
+              previewSlot={
+                generatedDescription?.fullHtml ? (
+                  <PreviewContainer
+                    title={localTitle}
+                    fullHtml={generatedDescription.fullHtml}
+                    imagesMeta={imagesMeta}
+                    parameters={localParameters}
+                  />
+                ) : null
+              }
+            />
+
             <Button
               onClick={async () => {
-                // Zapisz wszystkie dane do sesji przed wysylka
                 await updateSession({
                   data: {
                     ...productData,
@@ -630,82 +746,128 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
   return (
     <>
-      <div className="rounded-xl ring-1 ring-foreground/10 bg-card overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/30">
-          <div className="flex items-center gap-2">
-            <Tag className="size-4 text-primary" />
-            <span className="text-sm font-semibold">
-              {editProductId
-                ? editProductType === 'variant' ? "Edycja wariantu" : "Edycja oferty"
-                : "Nowa oferta"} — BaseLinker
-            </span>
-            {editProductId && (
-              <Badge variant="warning">ID: {editProductId}</Badge>
-            )}
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-
-        {/* Step navigation */}
-        <div className="flex border-b overflow-x-auto scrollbar-hide">
-          {STEPS.map((step, i) => {
-            const isDone = i < currentStepIndex
-            const isActive = step.key === currentStep
-            const isClickable = i <= maxVisitedStep || i === maxVisitedStep + 1
-
-            return (
-              <button
-                key={step.key}
-                onClick={() => isClickable && navigateToStep(i)}
-                className={cn(
-                  "flex-1 flex items-center justify-center gap-1 px-2 py-2.5 text-[11px] font-medium transition-colors whitespace-nowrap min-w-max",
-                  isActive
-                    ? "text-primary border-b-2 border-primary bg-accent/30"
-                    : isDone
-                    ? "text-green-600 hover:bg-muted cursor-pointer"
-                    : isClickable
-                    ? "text-muted-foreground hover:bg-muted/50 cursor-pointer"
-                    : "text-muted-foreground/40 cursor-default"
-                )}
-              >
-                {isDone ? <CheckCircle2 className="size-3.5 text-green-600 shrink-0" /> : step.icon}
-                <span>{step.label}</span>
-              </button>
-            )
-          })}
-        </div>
-
-        {/* Validation errors */}
-        {validationErrors.length > 0 && (
-          <div className="mx-5 mt-3 flex items-start gap-2 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">
-            <AlertCircle className="size-4 shrink-0 mt-0.5" />
-            <div>
-              {validationErrors.map((err, i) => (
-                <p key={i}>{err}</p>
-              ))}
+      <div className="grid grid-cols-[1fr_420px] gap-5">
+        {/* Lewa kolumna: workflow */}
+        <div className="rounded-xl ring-1 ring-foreground/10 bg-card overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/30">
+            <div className="flex items-center gap-2">
+              <Tag className="size-4 text-primary" />
+              <span className="text-sm font-semibold">
+                {editProductId
+                  ? editProductType === 'variant' ? "Edycja wariantu" : "Edycja oferty"
+                  : "Nowa oferta"} — BaseLinker
+              </span>
+              {editProductId && (
+                <Badge variant="warning">ID: {editProductId}</Badge>
+              )}
             </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="size-4" />
+            </button>
           </div>
-        )}
 
-        {/* Step content */}
-        <div className="p-5">
-          {renderStep()}
+          {/* Step navigation */}
+          <div className="flex border-b overflow-x-auto scrollbar-hide">
+            {STEPS.map((step, i) => {
+              const isDone = i < currentStepIndex
+              const isActive = step.key === currentStep
+              const isClickable = i <= maxVisitedStep || i === maxVisitedStep + 1
 
-          {/* Next step button */}
-          {currentStep !== 'approval' && (
-            <div className="mt-6 flex justify-end">
-              <Button onClick={handleNextStep} className="gap-1.5">
-                Dalej
-                <ChevronRight className="size-4" />
-              </Button>
+              return (
+                <button
+                  key={step.key}
+                  onClick={() => isClickable && navigateToStep(i)}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-1 px-2 py-2.5 text-[11px] font-medium transition-colors whitespace-nowrap min-w-max",
+                    isActive
+                      ? "text-primary border-b-2 border-primary bg-accent/30"
+                      : isDone
+                      ? "text-green-600 hover:bg-muted cursor-pointer"
+                      : isClickable
+                      ? "text-muted-foreground hover:bg-muted/50 cursor-pointer"
+                      : "text-muted-foreground/40 cursor-default"
+                  )}
+                >
+                  {isDone ? <CheckCircle2 className="size-3.5 text-green-600 shrink-0" /> : step.icon}
+                  <span>{step.label}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Validation errors */}
+          {validationErrors.length > 0 && (
+            <div className="mx-5 mt-3 flex items-start gap-2 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">
+              <AlertCircle className="size-4 shrink-0 mt-0.5" />
+              <div>
+                {validationErrors.map((err, i) => (
+                  <p key={i}>{err}</p>
+                ))}
+              </div>
             </div>
           )}
+
+          {/* Step content */}
+          <div className="p-5">
+            {renderStep()}
+
+            {/* Next step button */}
+            {currentStep !== 'approval' && (
+              <div className="mt-6 flex justify-end">
+                <Button onClick={handleNextStep} className="gap-1.5">
+                  Dalej
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Prawa kolumna: sticky AI Chat */}
+        <div className="sticky top-4 self-start" style={{ maxHeight: 'calc(100vh - 40px)' }}>
+          <ClaudeChat
+            currentTitle={localTitle}
+            currentDescription={generatedDescription?.fullHtml || ""}
+            currentImages={imagesMeta.filter(i => !i.removed).map(i => i.url)}
+            onUpdate={({ title: newTitle }) => {
+              if (newTitle) {
+                setLocalTitle(newTitle)
+                updateSession({ generatedTitle: newTitle })
+              }
+            }}
+            mode="description"
+            sections={generatedDescription?.sections || []}
+            currentParameters={localParameters}
+            imagesMeta={imagesMeta}
+            allegroParameters={parameters}
+            onTitleChange={(t) => {
+              setLocalTitle(t)
+              updateSession({ generatedTitle: t })
+            }}
+            onParameterChange={handleParameterChangeFromChat}
+            onSectionUpdate={handleChatSectionUpdate}
+            onSectionImageReorder={handleChatSectionImageReorder}
+            autoAskUnfilled={
+              currentStep === 'preview' &&
+              !!(parameters?.some(p =>
+                p.required && !localParameters[p.id]
+              ))
+            }
+            productData={{
+              title: productData.title,
+              description: '',
+              attributes: productData.attributes,
+            }}
+            targetedSections={targetedSections}
+            onRemoveTargetedSection={(id) => setTargetedSections(prev => prev.filter(s => s.id !== id))}
+            onClearTargets={() => setTargetedSections([])}
+            className="flex flex-col"
+            style={{ height: 'calc(100vh - 40px)' }}
+          />
         </div>
       </div>
 

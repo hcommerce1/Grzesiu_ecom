@@ -92,10 +92,12 @@ Podaj TYLKO JSON, bez komentarzy.`;
       }
     }
 
-    // Step 3: Fetch commission info for top results (max 10, in parallel)
+    // Step 3: Fetch commission info for top results (max 5, with timeout)
+    // Ograniczamy do 5 żeby nie blokować serwera zbyt długo
     const topResults = allResults.slice(0, 10);
+    const COMMISSION_BATCH = 5;
     const commissionsRaw = await Promise.allSettled(
-      topResults.map(cat => getCommissionInfo(cat.id))
+      topResults.slice(0, COMMISSION_BATCH).map(cat => getCommissionInfo(cat.id))
     );
 
     const suggestions = topResults.map((cat, i) => ({
@@ -103,7 +105,7 @@ Podaj TYLKO JSON, bez komentarzy.`;
       name: cat.name,
       path: cat.fullPath,
       leaf: true,
-      commission: commissionsRaw[i].status === 'fulfilled'
+      commission: i < COMMISSION_BATCH && commissionsRaw[i].status === 'fulfilled'
         ? commissionsRaw[i].value
         : null,
     }));

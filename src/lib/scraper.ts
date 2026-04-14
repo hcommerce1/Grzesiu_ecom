@@ -119,19 +119,6 @@ export async function scrapeProduct(url: string): Promise<ScrapeResponse> {
         return { success: false, error: 'Invalid URL. Please provide a valid HTTP/HTTPS URL.', errorType: 'INVALID_URL' };
     }
 
-    // Allegro /produkt/ URLs are heavily blocked — warn user to use /oferta/ link
-    try {
-        const u = new URL(url);
-        if (u.hostname.includes('allegro.pl') && u.pathname.startsWith('/produkt/')) {
-            console.log('[Scraper] Allegro /produkt/ URL — te linki są blokowane, użyj /oferta/');
-            return {
-                success: false,
-                error: 'Linki allegro.pl/produkt/ są blokowane. Użyj linku z /oferta/ — otwórz ofertę na Allegro i skopiuj URL z paska adresu (allegro.pl/oferta/nazwa-produktu-ID).',
-                errorType: 'ACCESS_DENIED',
-            };
-        }
-    } catch { /* ignore */ }
-
     try {
         // 1. Decodo Web Scraping API — najszybszy, omija anty-bot
         if (SCRAPER_MODE === 'decodo' && DECODO_API_USERNAME && DECODO_API_PASSWORD) {
@@ -215,7 +202,26 @@ function buildDecodoRequestBody(url: string): Record<string, unknown> {
         };
     }
 
-    // Allegro i inne strony — universal + browser actions
+    // Allegro — dodatkowe browser actions do klikania galerii
+    if (hostname.includes('allegro.pl')) {
+        return {
+            target: 'universal',
+            url,
+            headless: 'html',
+            locale: 'pl-PL',
+            geo: 'Poland',
+            browser_actions: [
+                { type: 'click', selector: { type: 'text', value: 'Pokaż wszystkie parametry' }, on_error: 'skip' },
+                { type: 'click', selector: { type: 'css', value: '[data-box-name*="allery"] img:nth-child(2)' }, on_error: 'skip' },
+                { type: 'click', selector: { type: 'css', value: '[data-box-name*="allery"] img:nth-child(3)' }, on_error: 'skip' },
+                { type: 'click', selector: { type: 'css', value: '[data-box-name*="allery"] img:nth-child(4)' }, on_error: 'skip' },
+                { type: 'click', selector: { type: 'css', value: '[data-box-name*="allery"] img:nth-child(5)' }, on_error: 'skip' },
+                { type: 'wait', wait_time_s: 2 },
+            ],
+        };
+    }
+
+    // Inne strony — universal + browser actions
     return {
         target: 'universal',
         url,
@@ -498,26 +504,72 @@ function extractAllegroFromDOM(document: Document, url: string, window: any): Pr
     const currency: string = dl.currency ?? 'PLN';
     const sku: string = dl.idItem ?? '';
 
-    const imgSet = new Set<string>();
-    const ogImg = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
-    if (ogImg) imgSet.add(ogImg);
-    document.querySelectorAll('link[rel="preload"][as="image"]').forEach((l: any) => {
-        const href = l.href || l.getAttribute('href') || '';
-        if (href.includes('allegroimg.com')) imgSet.add(href);
-    });
-    document.querySelectorAll('img[src*="allegroimg.com"]').forEach((img: any) => {
-        const src = img.src || img.getAttribute('src') || img.dataset?.src || '';
-        if (src && !src.includes('1x1') && !src.includes('sprite')) imgSet.add(src);
-    });
-    document.querySelectorAll('[data-src*="allegroimg.com"], [srcset*="allegroimg.com"]').forEach((el: any) => {
-        const dataSrc = el.getAttribute('data-src') || '';
-        if (dataSrc && dataSrc.includes('allegroimg.com')) imgSet.add(dataSrc);
-        const srcset = el.getAttribute('srcset') || '';
-        srcset.split(',').forEach((s: string) => {
-            const imgUrl = s.trim().split(/\s+/)[0];
-            if (imgUrl?.includes('allegroimg.com')) imgSet.add(imgUrl);
+    // Priorytet: JSON galerii z React hydration data
+    // Format: "original":"https:\u002F\u002Fa.allegroimg.com\u002Foriginal\u002F..."
+    const galleryImages: string[] = [];
+    for (const script of Array.from(scripts)) {
+        const text = (script as any).textContent || '';
+        const imgMatches = text.matchAll(/"original"\s*:\s*"(https?:[^"]*allegroimg\.com[^"]*)"/gi);
+        for (const m of imgMatches) {
+            let imgUrl = m[1];
+            imgUrl = imgUrl.replace(/\\u002F/g, '/');
+            if (imgUrl && imgUrl.includes('/original/') && !galleryImages.includes(imgUrl)) {
+                galleryImages.push(imgUrl);
+            }
+        }
+    }
+
+    let images: string[];
+    if (galleryImages.length > 0) {
+        images = galleryImages.slice(0, 30);
+    } else {
+        // Fallback: zbierz z DOM
+        const imgSet = new Set<string>();
+        const ogImg = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
+        if (ogImg) imgSet.add(ogImg);
+        document.querySelectorAll('link[rel="preload"][as="image"]').forEach((l: any) => {
+            const href = l.href || l.getAttribute('href') || '';
+            if (href.includes('allegroimg.com')) imgSet.add(href);
         });
-    });
+        document.querySelectorAll('img[src*="allegroimg.com"]').forEach((img: any) => {
+            const src = img.src || img.getAttribute('src') || img.dataset?.src || '';
+            if (src && !src.includes('1x1') && !src.includes('sprite')) imgSet.add(src);
+        });
+        // Filtruj UI elementy i deduplikuj
+        const uiPatterns = [
+            'action-common-', 'action-', 'illustration-', 'information-',
+            'brand-subbrand-', 'thank-you-page-', 'dark-illustration-',
+            'question-', 'star-full', 'star-empty', 'star-half',
+            'round-tick', 'badge-check', 'arrowhead-', 'heart-',
+            'share-', 'weighing-scale', 'flame-', 'low-price-',
+            'company-', 'smart-',
+        ];
+        const filtered = Array.from(imgSet).filter(u => {
+            const lower = u.toLowerCase();
+            if (!lower.includes('allegroimg.com')) return false;
+            const sizeMatch = lower.match(/\/s(\d+)\//);
+            if (sizeMatch && parseInt(sizeMatch[1]) < 150) return false;
+            if (uiPatterns.some(p => lower.includes(p))) return false;
+            if (lower.includes('/user/') || lower.includes('/avatar')) return false;
+            if (lower.includes('/logo') || lower.includes('/banner/')) return false;
+            const pathOnly = lower.split('?')[0];
+            if (pathOnly.endsWith('.svg') || pathOnly.endsWith('.ico')) return false;
+            return true;
+        });
+        const byBase = new Map<string, string>();
+        for (const u of filtered) {
+            const base = u.replace(/\/(original|s\d+)\//, '/SIZE/');
+            const existing = byBase.get(base);
+            if (!existing) { byBase.set(base, u); }
+            else if (u.includes('/original/')) { byBase.set(base, u); }
+            else if (!existing.includes('/original/')) {
+                const es = parseInt(existing.match(/\/s(\d+)\//)?.[1] || '0');
+                const ns = parseInt(u.match(/\/s(\d+)\//)?.[1] || '0');
+                if (ns > es) byBase.set(base, u);
+            }
+        }
+        images = Array.from(byBase.values()).slice(0, 30);
+    }
 
     const descEl = document.querySelector('[data-box-name="Description"]') ?? document.querySelector('[data-box-name*="escription"]');
     const description: string = (descEl as any)?.textContent?.trim() ?? document.querySelector('meta[name="description"]')?.getAttribute('content') ?? '';
@@ -553,7 +605,7 @@ function extractAllegroFromDOM(document: Document, url: string, window: any): Pr
     const eanMatch = bodyText.match(/EAN[:\s]*(\d{8,13})/i);
     const ean: string = eanMatch?.[1] ?? '';
 
-    return { title, price, currency, sku, images: Array.from(imgSet).slice(0, 30), description, attributes, ean, url };
+    return { title, price, currency, sku, images, description, attributes, ean, url };
 }
 
 // ─── Playwright Mode (with optional proxy) ───
@@ -585,6 +637,11 @@ async function scrapeWithPlaywright(url: string, proxy?: ProxyConfig): Promise<S
 
         await waitForContent(page);
         await autoScroll(page);
+
+        // Allegro: kliknij miniaturki galerii żeby załadować pełne zdjęcia
+        if (url.includes('allegro.pl')) {
+            await clickAllegroGallery(page);
+        }
 
         const bodyHtml = await page.content();
         if (detectAccessDenied(bodyHtml)) {
@@ -631,6 +688,52 @@ async function waitForContent(page: import('playwright').Page): Promise<void> {
     }
 
     await page.waitForTimeout(3000);
+}
+
+// ─── Allegro gallery interaction — click thumbnails to load all images ───
+async function clickAllegroGallery(page: import('playwright').Page): Promise<void> {
+    try {
+        const thumbSelectors = [
+            '[data-box-name*="allery"] img',
+            '[data-box-name*="image"] img',
+            '[class*="gallery"] [class*="thumb"] img',
+            '[class*="gallery-nav"] img',
+            '[class*="swiper-slide"] img',
+        ];
+        for (const sel of thumbSelectors) {
+            const thumbs = await page.$$(sel);
+            if (thumbs.length > 1) {
+                for (const thumb of thumbs.slice(0, 15)) {
+                    try {
+                        await thumb.click();
+                        await page.waitForTimeout(300);
+                    } catch { /* skip */ }
+                }
+                await page.waitForTimeout(1000);
+                return;
+            }
+        }
+        // Fallback: kliknij strzałkę "next" kilka razy
+        const nextSelectors = [
+            '[class*="gallery"] [class*="next"]',
+            '[class*="swiper-button-next"]',
+            'button[aria-label*="next" i]',
+            'button[aria-label*="następn" i]',
+        ];
+        for (const sel of nextSelectors) {
+            const btn = await page.$(sel);
+            if (btn) {
+                for (let i = 0; i < 10; i++) {
+                    try {
+                        await btn.click();
+                        await page.waitForTimeout(400);
+                    } catch { break; }
+                }
+                await page.waitForTimeout(1000);
+                return;
+            }
+        }
+    } catch { /* gallery interaction failed — not critical */ }
 }
 
 // ─── Auto-scroll to trigger lazy-loaded content ───

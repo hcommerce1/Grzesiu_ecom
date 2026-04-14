@@ -172,6 +172,8 @@ async function refreshToken(token: AllegroToken): Promise<AllegroToken> {
 }
 
 // ─── Authenticated fetch ───
+const ALLEGRO_FETCH_TIMEOUT = 15_000; // 15s timeout
+
 export async function allegroFetch<T = unknown>(
   endpoint: string,
   options: RequestInit = {}
@@ -184,22 +186,35 @@ export async function allegroFetch<T = unknown>(
     token = await refreshToken(token);
   }
 
-  const res = await fetch(`${ALLEGRO_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token.access_token}`,
-      Accept: 'application/vnd.allegro.public.v1+json',
-      'Content-Type': 'application/vnd.allegro.public.v1+json',
-      ...(options.headers ?? {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ALLEGRO_FETCH_TIMEOUT);
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Allegro API ${endpoint} failed: ${res.status} ${text}`);
+  try {
+    const res = await fetch(`${ALLEGRO_BASE}${endpoint}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        Accept: 'application/vnd.allegro.public.v1+json',
+        'Content-Type': 'application/vnd.allegro.public.v1+json',
+        ...(options.headers ?? {}),
+      },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Allegro API ${endpoint} failed: ${res.status} ${text}`);
+    }
+
+    return res.json() as Promise<T>;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Allegro API ${endpoint} timeout po ${ALLEGRO_FETCH_TIMEOUT / 1000}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return res.json() as Promise<T>;
 }
 
 // ─── Category helpers ───
@@ -216,8 +231,8 @@ export async function getChildCategories(parentId: string): Promise<AllegroCateg
 }
 
 export async function getCategoryParameters(categoryId: string): Promise<AllegroParameter[]> {
-  if (!/^\d+$/.test(categoryId)) {
-    throw new Error(`Nieprawidłowe categoryId "${categoryId}" — ID kategorii Allegro musi być numeryczne`);
+  if (!categoryId || categoryId === 'undefined') {
+    throw new Error('Brak categoryId');
   }
   const data = await allegroFetch<{ parameters: AllegroParameter[] }>(
     `/sale/categories/${categoryId}/parameters`
@@ -229,8 +244,8 @@ export async function getCategoryParameters(categoryId: string): Promise<Allegro
 // Sends a minimal fake offer to Allegro's fee calculator and reads back the commission.
 // Uses 100 PLN price so the returned fee amount directly equals the percentage.
 export async function getCommissionInfo(categoryId: string): Promise<string> {
-  if (!/^\d+$/.test(categoryId)) {
-    throw new Error(`Nieprawidłowe categoryId "${categoryId}" — ID kategorii Allegro musi być numeryczne`);
+  if (!categoryId || categoryId === 'undefined') {
+    throw new Error('Brak categoryId');
   }
 
   try {

@@ -14,7 +14,7 @@ interface FieldSelectorProps {
   values?: Record<string, string>;
 }
 
-const MANDATORY = ['inventory_id', 'is_bundle', 'tax_rate', 'name'];
+const MANDATORY = ['inventory_id', 'tax_rate', 'name'];
 
 const OPTIONAL_FIELDS: { key: string; label: string }[] = [
   { key: 'sku', label: 'SKU' },

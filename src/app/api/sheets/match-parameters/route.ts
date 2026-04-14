@@ -12,7 +12,11 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { categoryId, sheetData } = body as { categoryId: string; sheetData: SheetMeta };
+    const { categoryId, sheetData, parameters: clientParameters } = body as {
+      categoryId: string;
+      sheetData: SheetMeta;
+      parameters?: import('@/lib/types').AllegroParameter[];
+    };
 
     if (!categoryId) {
       return NextResponse.json({ error: 'categoryId is required' }, { status: 400 });
@@ -21,7 +25,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'sheetData is required' }, { status: 400 });
     }
 
-    const parameters = await getCategoryParameters(categoryId);
+    // Użyj parametrów przesłanych przez klienta jeśli dostępne, żeby uniknąć podwójnego fetcha z Allegro
+    const parameters = clientParameters?.length ? clientParameters : await getCategoryParameters(categoryId);
     const { matchResults, suggestedValues } = matchSheetToParameters(sheetData, parameters);
 
     return NextResponse.json({ parameters, matchResults, suggestedValues });

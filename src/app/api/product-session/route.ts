@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
     mode: body.mode ?? existing?.mode ?? 'new',
     product_id: body.product_id ?? existing?.product_id,
     parent_id: body.parent_id ?? existing?.parent_id,
+    is_bundle: body.is_bundle ?? existing?.is_bundle,
     bundle_products: body.bundle_products ?? existing?.bundle_products,
     data: body.data ?? existing?.data ?? {
       title: '',
@@ -43,6 +44,7 @@ export async function POST(req: NextRequest) {
     inventoryId: body.inventoryId ?? existing?.inventoryId,
     defaultWarehouse: body.defaultWarehouse ?? existing?.defaultWarehouse,
     fieldSelection: body.fieldSelection ?? existing?.fieldSelection ?? createDefaultFieldSelection(body.mode ?? existing?.mode ?? 'new'),
+    extraFieldValues: body.extraFieldValues ?? existing?.extraFieldValues,
     ready: body.ready ?? existing?.ready ?? false,
   };
 

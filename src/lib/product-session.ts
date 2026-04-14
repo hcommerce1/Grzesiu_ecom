@@ -39,7 +39,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
 
   const payload: Record<string, unknown> = {
     inventory_id: inventoryId,
-    is_bundle: mode === 'bundle',
+    is_bundle: session.is_bundle ?? (mode === 'bundle'),
     tax_rate: session.tax_rate,
     text_fields: {
       name: data.title,
@@ -65,7 +65,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
   // Extra fields
   Object.entries(fieldSelection ?? {}).forEach(([key, val]) => {
     if (val && key.startsWith('extra_field_')) {
-      const extraVal = (data.attributes ?? {})[key];
+      const extraVal = session.extraFieldValues?.[key] ?? '';
       if (extraVal) tf[key] = extraVal;
     }
   });
@@ -129,7 +129,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     if (session.parent_id) payload['parent_id'] = session.parent_id;
     if (session.product_id) payload['product_id'] = session.product_id;
   }
-  if (mode === 'bundle' && session.bundle_products) {
+  if (session.is_bundle && session.bundle_products) {
     payload['bundle_products'] = session.bundle_products;
   }
 

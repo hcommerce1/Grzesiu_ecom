@@ -22,6 +22,7 @@ interface SearchResult {
 
 interface CategorySelectorProps {
   onSelect: (category: AllegroCategory) => void;
+  onReset?: () => void;
   selectedCategory?: AllegroCategory | null;
   productData?: ProductData | null;
 }
@@ -62,7 +63,7 @@ function CommissionBadge({ commission }: { commission: string | null | undefined
 // Module-level cache for suggestions so navigating away and back doesn't re-fetch
 const suggestionsCache = new Map<string, CategorySuggestion[]>();
 
-export function CategorySelector({ onSelect, selectedCategory, productData }: CategorySelectorProps) {
+export function CategorySelector({ onSelect, onReset, selectedCategory, productData }: CategorySelectorProps) {
   // --- Shared state ---
   const [error, setError] = useState('');
   const [isDemo, setIsDemo] = useState(false);
@@ -80,6 +81,7 @@ export function CategorySelector({ onSelect, selectedCategory, productData }: Ca
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const suggestionsAbortRef = useRef<AbortController | null>(null);
 
   // --- Tree browser ---
   const [showTree, setShowTree] = useState(false);
@@ -120,6 +122,11 @@ export function CategorySelector({ onSelect, selectedCategory, productData }: Ca
 
   async function loadSuggestions() {
     if (!productData) return;
+    // Anuluj poprzedni request jeśli trwa
+    suggestionsAbortRef.current?.abort();
+    const controller = new AbortController();
+    suggestionsAbortRef.current = controller;
+
     setSuggestionsLoading(true);
     setSuggestionsError('');
     try {
@@ -131,6 +138,7 @@ export function CategorySelector({ onSelect, selectedCategory, productData }: Ca
           productAttributes: productData.attributes,
           sourceCategory: productData.attributes?.['_sourceCategory'],
         }),
+        signal: controller.signal,
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -139,6 +147,7 @@ export function CategorySelector({ onSelect, selectedCategory, productData }: Ca
       suggestionsCache.set(cacheKey, s);
       if (data._demo) setIsDemo(true);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setSuggestionsError(err instanceof Error ? err.message : 'Nie udało się pobrać sugestii');
     } finally {
       setSuggestionsLoading(false);
@@ -181,6 +190,9 @@ export function CategorySelector({ onSelect, selectedCategory, productData }: Ca
   }
 
   function selectCategory(cat: { id: string; name: string; path?: string; fullPath?: string; leaf?: boolean }) {
+    // Anuluj trwające ładowanie sugestii — żeby nie blokować serwera Next.js
+    suggestionsAbortRef.current?.abort();
+
     const allegroCategory: AllegroCategory = {
       id: cat.id,
       name: cat.name,
@@ -221,7 +233,7 @@ export function CategorySelector({ onSelect, selectedCategory, productData }: Ca
             </div>
           </div>
           <button
-            onClick={() => onSelect(null as unknown as AllegroCategory)}
+            onClick={() => onReset?.()}
             className="text-xs text-blue-600 hover:text-blue-800 font-semibold whitespace-nowrap px-2 py-1 rounded hover:bg-blue-100 transition-colors"
           >
             Zmień

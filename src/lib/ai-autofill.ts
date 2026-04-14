@@ -58,7 +58,7 @@ function tierParameters(
 // ─── Build prompt ───
 
 function formatParamForPrompt(param: AllegroParameter, truncate: boolean): string {
-  const opts = param.options ?? param.restrictions?.allowedValues ?? [];
+  const opts = param.dictionary ?? (Array.isArray(param.options) ? param.options : null) ?? param.restrictions?.allowedValues ?? [];
   const lines: string[] = [];
 
   lines.push(`### Parametr ID="${param.id}" | Nazwa="${param.name}" | Typ=${param.type} | Wymagany=${param.required ? 'TAK' : 'NIE'}`);
@@ -222,7 +222,7 @@ export function validateAutoFillResponse(
     if (processedIds.has(parameterId)) continue;
     processedIds.add(parameterId);
 
-    const opts = param.options ?? param.restrictions?.allowedValues ?? [];
+    const opts = param.dictionary ?? (Array.isArray(param.options) ? param.options : null) ?? param.restrictions?.allowedValues ?? [];
 
     // Validate based on type
     if (param.type === 'dictionary' || opts.length > 0) {

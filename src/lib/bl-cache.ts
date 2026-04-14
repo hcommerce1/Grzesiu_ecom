@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import type { BLCache } from './types';
+import type { BLCache, BLExtraField } from './types';
 import {
   getInventories,
   getInventoryWarehouses,
@@ -10,6 +10,23 @@ import {
   getInventoryIntegrations,
   getInventoryAvailableTextFieldKeys,
 } from './baselinker';
+
+/** Mapuje surową odpowiedź BaseLinker API na BLExtraField */
+function mapExtraFields(raw: Record<string, unknown>[]): BLExtraField[] {
+  return raw.map((ef) => {
+    const editorType = Number(ef.editor_type ?? ef.kind ?? 0);
+    let kind: BLExtraField['kind'] = 'text';
+    if (editorType === 2) kind = 'number';
+    else if (editorType === 3 || editorType === 4) kind = 'list';
+
+    return {
+      extra_field_id: Number(ef.extra_field_id ?? ef.id ?? 0),
+      name: String(ef.name ?? ''),
+      kind: (ef.kind as BLExtraField['kind']) ?? kind,
+      editor: String(ef.options ?? ef.editor ?? ''),
+    };
+  });
+}
 
 const CACHE_FILE = path.join(process.cwd(), 'tmp', 'bl-cache.json');
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -69,7 +86,7 @@ export async function bootstrapBLCache(inventoryId?: number): Promise<BLCache> {
     inventories: inventories as unknown as BLCache['inventories'],
     warehouses: warehouses as unknown as BLCache['warehouses'],
     priceGroups: priceGroups as unknown as BLCache['priceGroups'],
-    extraFields: extraFields as unknown as BLCache['extraFields'],
+    extraFields: mapExtraFields(extraFields as Record<string, unknown>[]),
     manufacturers: manufacturers as unknown as BLCache['manufacturers'],
     integrations,
     textFieldKeys,

@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, memo } from 'react';
-import { Lock, ChevronDown, ChevronRight, AlertCircle, X, Loader2 as Loader } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
+import { Lock, ChevronDown, ChevronRight, AlertCircle, X, Loader2 as Loader, Sparkles } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FilterableSelect, Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
 import { DatePicker } from '@/components/ui/datepicker';
@@ -10,15 +10,15 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useFieldPreferences } from '@/lib/stores/field-preferences';
 import { createDefaultFieldSelection } from '@/lib/field-selection';
+import { BundleProductsPicker } from './BundleProductsPicker';
 import type { FieldSelection, ProductMode, BLExtraField, AllegroParameter, ParameterMatchResult, AutoFillEntry } from '@/lib/types';
 
 /* ─── Constants ─── */
 
-const MANDATORY_FIELDS = ['inventory_id', 'is_bundle', 'tax_rate', 'name'];
+const MANDATORY_FIELDS = ['inventory_id', 'tax_rate', 'name'];
 
 const MANDATORY_LABELS: Record<string, string> = {
   inventory_id: 'Inventory ID',
-  is_bundle: 'Bundle',
   tax_rate: 'Stawka VAT',
   name: 'Nazwa (name)',
 };
@@ -65,6 +65,20 @@ interface FieldsAndParametersStepProps {
   aiFillResults?: AutoFillEntry[];
   /** AI auto-fill status */
   aiFillStatus?: 'idle' | 'loading' | 'done' | 'error';
+  /** Whether this product is a bundle */
+  isBundle: boolean;
+  /** Callback when is_bundle changes */
+  onIsBundleChange: (val: boolean) => void;
+  /** Bundle component products */
+  bundleProducts: Record<string, number>;
+  /** Callback when bundle products change */
+  onBundleProductsChange: (val: Record<string, number>) => void;
+  /** Inventory ID for loading BL products */
+  inventoryId?: number;
+  /** Initial extra field values (from session) */
+  initialExtraFieldValues?: Record<string, string>;
+  /** Callback when extra field values change */
+  onExtraFieldValuesChange?: (vals: Record<string, string>) => void;
 }
 
 /* ─── Section Header ─── */
@@ -84,14 +98,14 @@ function SectionHeader({
     <button
       type="button"
       onClick={onToggle}
-      className="flex items-center gap-2 w-full py-3 group"
+      className="flex items-center gap-2 w-full py-3.5 group"
     >
       {expanded ? (
         <ChevronDown className="size-4 text-muted-foreground" />
       ) : (
         <ChevronRight className="size-4 text-muted-foreground" />
       )}
-      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+      <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
         {title}
       </span>
       <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
@@ -152,7 +166,7 @@ const FieldRow = memo(function FieldRow({
       {/* Label + preview */}
       <div className="min-w-0 pt-0.5">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-sm text-foreground">{label}</span>
+          <span className="text-sm font-medium text-foreground">{label}</span>
           {locked && <Lock className="size-3 text-muted-foreground" />}
           {conditionLabel && (
             <span className="text-xs text-muted-foreground">({conditionLabel})</span>
@@ -269,7 +283,7 @@ function MultiSelect({
                 Brak wyników
               </div>
             )}
-            {filtered.map((opt) => {
+            {filtered.slice(0, 50).map((opt) => {
               const isChecked = selected.includes(opt.id);
               return (
                 <label
@@ -290,12 +304,112 @@ function MultiSelect({
                 </label>
               );
             })}
+            {filtered.length > 50 && (
+              <div className="px-2 py-2 text-center text-xs text-muted-foreground">
+                Wpisz więcej aby zawęzić ({filtered.length - 50} ukrytych)
+              </div>
+            )}
           </div>
         </>
       )}
     </div>
   );
 }
+
+/* ─── Memoized Parameter Row ─── */
+
+interface ParameterRowProps {
+  param: AllegroParameter;
+  value: string | string[] | undefined;
+  match: ParameterMatchResult | undefined;
+  aiFill: AutoFillEntry | undefined;
+  isRequired: boolean;
+  checked: boolean;
+  onToggle: (key: string) => void;
+  onValueChange: (id: string, val: string | string[]) => void;
+}
+
+const ParameterRow = memo(function ParameterRow({
+  param,
+  value,
+  match,
+  aiFill,
+  isRequired,
+  checked,
+  onToggle,
+  onValueChange,
+}: ParameterRowProps) {
+  const handleChange = useCallback(
+    (v: string | string[]) => onValueChange(param.id, v),
+    [param.id, onValueChange]
+  );
+
+  const isEmpty = !value || (typeof value === 'string' && !value.trim()) || (Array.isArray(value) && value.length === 0);
+  const fieldKey = isRequired ? param.id : `param_${param.id}`;
+
+  return (
+    <FieldRow
+      key={param.id}
+      fieldKey={fieldKey}
+      label={param.name}
+      checked={checked}
+      locked={isRequired}
+      onToggle={onToggle}
+      validationError={isRequired && isEmpty}
+      conditionLabel={param.unit ? `${param.unit}` : undefined}
+    >
+      {(isRequired || checked) && (
+        <div className="space-y-1">
+          <ParameterEditor
+            param={param}
+            value={value}
+            onChange={handleChange}
+          />
+          {/* Sheet match indicators */}
+          {match && match.confidence >= 0.7 && (
+            <p className="text-[10px] text-green-600 flex items-center gap-1">
+              <span className="size-1.5 rounded-full bg-green-500 inline-block" />
+              Z arkusza: {match.sheetValue}
+            </p>
+          )}
+          {match && match.confidence > 0 && match.confidence < 0.7 && (
+            <p className="text-[10px] text-amber-600 flex items-center gap-1">
+              <span className="size-1.5 rounded-full bg-amber-500 inline-block" />
+              Sugestia: {match.sheetValue} (niepewne)
+            </p>
+          )}
+          {/* AI fill — high confidence (applied) */}
+          {!match && aiFill && aiFill.confidence >= 0.8 && !isEmpty && (
+            <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/20 rounded px-1.5 py-0.5">
+              <Sparkles className="size-3 text-blue-500" />
+              <p className="text-[10px] text-blue-600 font-medium">
+                AI: {aiFill.source} ({Math.round(aiFill.confidence * 100)}%)
+              </p>
+            </div>
+          )}
+          {/* AI fill — low confidence suggestion with Apply button */}
+          {!match && aiFill && aiFill.confidence >= 0.5 && aiFill.confidence < 0.8 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <p className="text-[10px] text-amber-600 flex items-center gap-1">
+                <span className="size-1.5 rounded-full bg-amber-400 inline-block" />
+                AI sugestia: {aiFill.source} ({Math.round(aiFill.confidence * 100)}%)
+              </p>
+              {isEmpty && (
+                <button
+                  type="button"
+                  onClick={() => onValueChange(param.id, aiFill.value)}
+                  className="text-[10px] font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 px-1.5 py-0.5 rounded transition-colors"
+                >
+                  Zastosuj
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </FieldRow>
+  );
+});
 
 /* ─── Parameter Value Editor ─── */
 
@@ -308,7 +422,8 @@ function ParameterEditor({
   value: string | string[] | undefined;
   onChange: (val: string | string[]) => void;
 }) {
-  const rawOpts = param.options ?? param.restrictions?.allowedValues ?? [];
+  // Prawdziwe API Allegro: opcje w param.dictionary (tablica), param.options to obiekt z metadanymi
+  const rawOpts = param.dictionary ?? (Array.isArray(param.options) ? param.options : null) ?? param.restrictions?.allowedValues ?? [];
   const opts = rawOpts.filter((o): o is { id: string; value: string } => o != null && o.id != null && o.value != null);
 
   if (param.type === 'dictionary' || opts.length > 0) {
@@ -482,19 +597,28 @@ function FieldsAndParametersStepInner({
   sheetMatchResults,
   aiFillResults,
   aiFillStatus,
+  isBundle,
+  onIsBundleChange,
+  bundleProducts,
+  onBundleProductsChange,
+  inventoryId,
+  initialExtraFieldValues,
+  onExtraFieldValuesChange,
 }: FieldsAndParametersStepProps) {
   const parameters = rawParameters ?? [];
 
   // Build a lookup for sheet match results by parameter ID
-  const matchByParamId = (sheetMatchResults ?? []).reduce<Record<string, ParameterMatchResult>>(
-    (acc, r) => { acc[r.parameterId] = r; return acc; },
-    {}
+  const matchByParamId = useMemo(() =>
+    (sheetMatchResults ?? []).reduce<Record<string, ParameterMatchResult>>(
+      (acc, r) => { acc[r.parameterId] = r; return acc; }, {}
+    ), [sheetMatchResults]
   );
 
   // Build a lookup for AI fill results by parameter ID
-  const aiFillByParamId = (aiFillResults ?? []).reduce<Record<string, AutoFillEntry>>(
-    (acc, r) => { acc[r.parameterId] = r; return acc; },
-    {}
+  const aiFillByParamId = useMemo(() =>
+    (aiFillResults ?? []).reduce<Record<string, AutoFillEntry>>(
+      (acc, r) => { acc[r.parameterId] = r; return acc; }, {}
+    ), [aiFillResults]
   );
   const { preferences, mergePreferences } = useFieldPreferences();
 
@@ -509,7 +633,7 @@ function FieldsAndParametersStepInner({
   );
 
   // Extra field values stored separately
-  const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>({});
+  const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>(initialExtraFieldValues ?? {});
 
   // Section collapse state
   const [expandedSections, setExpandedSections] = useState({
@@ -546,19 +670,44 @@ function FieldsAndParametersStepInner({
   // Update extra field value
   const updateExtraFieldValue = useCallback(
     (key: string, value: string) => {
-      setExtraFieldValues((prev) => ({ ...prev, [key]: value }));
+      setExtraFieldValues((prev) => {
+        const next = { ...prev, [key]: value };
+        onExtraFieldValuesChange?.(next);
+        return next;
+      });
     },
-    []
+    [onExtraFieldValuesChange]
   );
 
-  const toggleSection = (section: keyof typeof expandedSections) => {
+  const toggleSection = useCallback((section: keyof typeof expandedSections) => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
-  };
+  }, []);
 
   // Build rows
   const modeExtraField = MODE_EXTRA_FIELDS[mode];
-  const requiredParams = parameters.filter((p) => p.required);
-  const optionalParams = parameters.filter((p) => !p.required);
+  const requiredParams = useMemo(() => parameters.filter((p) => p.required), [parameters]);
+  const optionalParams = useMemo(() => parameters.filter((p) => !p.required), [parameters]);
+
+  // Lazy rendering for optional parameters
+  const OPTIONAL_RENDER_LIMIT = 30;
+  const [showAllOptional, setShowAllOptional] = useState(false);
+
+  const visibleOptionalParams = useMemo(() => {
+    if (showAllOptional || optionalParams.length <= OPTIONAL_RENDER_LIMIT) return optionalParams;
+    const withValues = new Set(
+      optionalParams.filter((p) => {
+        const v = paramValues[p.id];
+        return v && (typeof v === 'string' ? v.trim() : v.length > 0);
+      }).map((p) => p.id)
+    );
+    const result: AllegroParameter[] = [];
+    for (const p of optionalParams) {
+      if (result.length < OPTIONAL_RENDER_LIMIT || withValues.has(p.id)) {
+        result.push(p);
+      }
+    }
+    return result;
+  }, [optionalParams, paramValues, showAllOptional]);
 
   const basicFieldCount = MANDATORY_FIELDS.length + OPTIONAL_FIELDS.length + (modeExtraField ? 1 : 0);
   const extraFieldCount = extraFields.length;
@@ -587,8 +736,53 @@ function FieldsAndParametersStepInner({
               onToggle={toggleField}
             />
           ))}
+
+          {/* is_bundle toggle */}
+          <div className="grid grid-cols-[2rem_1fr_minmax(12rem,20rem)] items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-muted/40">
+            <div className="flex items-center justify-center pt-0.5">
+              <Checkbox checked={true} disabled className="opacity-60" />
+            </div>
+            <div className="min-w-0 pt-0.5">
+              <span className="text-sm text-foreground">Bundle (zestaw)</span>
+              <span className="text-xs text-muted-foreground block">
+                {isBundle ? 'Tak — produkt jest zestawem' : 'Nie — produkt podstawowy'}
+              </span>
+            </div>
+            <div className="flex gap-1">
+              {[
+                { v: false, label: 'Nie' },
+                { v: true, label: 'Tak' },
+              ].map(({ v, label }) => (
+                <button
+                  key={String(v)}
+                  type="button"
+                  onClick={() => onIsBundleChange(v)}
+                  className={cn(
+                    'flex-1 h-9 rounded-lg border text-sm font-medium transition-colors',
+                    isBundle === v
+                      ? 'border-primary bg-accent text-accent-foreground'
+                      : 'border-input hover:bg-muted'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Bundle products picker */}
+          {isBundle && (
+            <div className="mx-3 mt-1 mb-2">
+              <BundleProductsPicker
+                inventoryId={inventoryId}
+                bundleProducts={bundleProducts}
+                onChange={onBundleProductsChange}
+              />
+            </div>
+          )}
+
           {/* Mode-specific mandatory */}
-          {modeExtraField && (
+          {modeExtraField && modeExtraField.key !== 'bundle_products' && (
             <FieldRow
               fieldKey={modeExtraField.key}
               label={modeExtraField.label}
@@ -693,122 +887,56 @@ function FieldsAndParametersStepInner({
             </div>
           )}
           {expandedSections.params && (
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               {/* Required parameters */}
               {requiredParams.length > 0 && (
-                <>
-                  {requiredParams.map((param) => {
-                    const val = paramValues[param.id];
-                    const isEmpty = !val || (typeof val === 'string' && !val.trim()) || (Array.isArray(val) && val.length === 0);
-                    const match = matchByParamId[param.id];
-                    const aiFill = aiFillByParamId[param.id];
-
-                    return (
-                      <FieldRow
-                        key={param.id}
-                        fieldKey={param.id}
-                        label={param.name}
-                        checked={true}
-                        locked={true}
-                        onToggle={toggleField}
-                        validationError={isEmpty}
-                        conditionLabel={param.unit ? `${param.unit}` : undefined}
-                      >
-                        <div className="space-y-1">
-                          <ParameterEditor
-                            param={param}
-                            value={val}
-                            onChange={(v) => updateParamValue(param.id, v)}
-                          />
-                          {match && match.confidence >= 0.7 && (
-                            <p className="text-[10px] text-green-600 flex items-center gap-1">
-                              <span className="size-1.5 rounded-full bg-green-500 inline-block" />
-                              Z arkusza: {match.sheetValue}
-                            </p>
-                          )}
-                          {match && match.confidence > 0 && match.confidence < 0.7 && (
-                            <p className="text-[10px] text-amber-600 flex items-center gap-1">
-                              <span className="size-1.5 rounded-full bg-amber-500 inline-block" />
-                              Sugestia: {match.sheetValue} (niepewne)
-                            </p>
-                          )}
-                          {!match && aiFill && aiFill.confidence >= 0.8 && (
-                            <p className="text-[10px] text-blue-600 flex items-center gap-1">
-                              <span className="size-1.5 rounded-full bg-blue-500 inline-block" />
-                              AI: {aiFill.source}
-                            </p>
-                          )}
-                          {!match && aiFill && aiFill.confidence >= 0.5 && aiFill.confidence < 0.8 && (
-                            <p className="text-[10px] text-amber-600 flex items-center gap-1">
-                              <span className="size-1.5 rounded-full bg-amber-400 inline-block" />
-                              AI sugestia: {aiFill.source}
-                            </p>
-                          )}
-                        </div>
-                      </FieldRow>
-                    );
-                  })}
-                  {optionalParams.length > 0 && (
-                    <div className="mx-3 my-2 h-px bg-border/50" />
-                  )}
-                </>
+                <div className="rounded-lg bg-amber-50/40 dark:bg-amber-950/10 p-2 space-y-1">
+                  <div className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider px-3 pb-1">
+                    Wymagane ({requiredParams.length})
+                  </div>
+                  {requiredParams.map((param) => (
+                    <ParameterRow
+                      key={param.id}
+                      param={param}
+                      value={paramValues[param.id]}
+                      match={matchByParamId[param.id]}
+                      aiFill={aiFillByParamId[param.id]}
+                      isRequired={true}
+                      checked={true}
+                      onToggle={toggleField}
+                      onValueChange={updateParamValue}
+                    />
+                  ))}
+                </div>
               )}
 
               {/* Optional parameters */}
-              {optionalParams.map((param) => {
+              {visibleOptionalParams.map((param) => {
                 const paramKey = `param_${param.id}`;
                 const checked = selection[paramKey as keyof FieldSelection] !== false;
-                const val = paramValues[param.id];
-                const match = matchByParamId[param.id];
-                const aiFill = aiFillByParamId[param.id];
-
                 return (
-                  <FieldRow
+                  <ParameterRow
                     key={param.id}
-                    fieldKey={paramKey}
-                    label={param.name}
+                    param={param}
+                    value={paramValues[param.id]}
+                    match={matchByParamId[param.id]}
+                    aiFill={aiFillByParamId[param.id]}
+                    isRequired={false}
                     checked={checked}
-                    locked={false}
                     onToggle={toggleField}
-                    validationError={false}
-                    conditionLabel={param.unit ? `${param.unit}` : undefined}
-                  >
-                    {checked && (
-                      <div className="space-y-1">
-                        <ParameterEditor
-                          param={param}
-                          value={val}
-                          onChange={(v) => updateParamValue(param.id, v)}
-                        />
-                        {match && match.confidence >= 0.7 && (
-                          <p className="text-[10px] text-green-600 flex items-center gap-1">
-                            <span className="size-1.5 rounded-full bg-green-500 inline-block" />
-                            Z arkusza: {match.sheetValue}
-                          </p>
-                        )}
-                        {match && match.confidence > 0 && match.confidence < 0.7 && (
-                          <p className="text-[10px] text-amber-600 flex items-center gap-1">
-                            <span className="size-1.5 rounded-full bg-amber-500 inline-block" />
-                            Sugestia: {match.sheetValue} (niepewne)
-                          </p>
-                        )}
-                        {!match && aiFill && aiFill.confidence >= 0.8 && (
-                          <p className="text-[10px] text-blue-600 flex items-center gap-1">
-                            <span className="size-1.5 rounded-full bg-blue-500 inline-block" />
-                            AI: {aiFill.source}
-                          </p>
-                        )}
-                        {!match && aiFill && aiFill.confidence >= 0.5 && aiFill.confidence < 0.8 && (
-                          <p className="text-[10px] text-amber-600 flex items-center gap-1">
-                            <span className="size-1.5 rounded-full bg-amber-400 inline-block" />
-                            AI sugestia: {aiFill.source}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </FieldRow>
+                    onValueChange={updateParamValue}
+                  />
                 );
               })}
+              {!showAllOptional && optionalParams.length > OPTIONAL_RENDER_LIMIT && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllOptional(true)}
+                  className="w-full py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Pokaż wszystkie ({optionalParams.length - visibleOptionalParams.length} ukrytych)
+                </button>
+              )}
             </div>
           )}
         </>

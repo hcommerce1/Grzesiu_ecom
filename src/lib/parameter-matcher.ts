@@ -185,8 +185,8 @@ export function matchSheetToParameters(
     if (!param) continue;
 
     // Dictionary type: match value to options
-    if (param.type === 'dictionary' || param.options?.length) {
-      const opts = param.options ?? param.restrictions?.allowedValues ?? [];
+    if (param.type === 'dictionary' || param.dictionary?.length || (Array.isArray(param.options) && param.options.length)) {
+      const opts = param.dictionary ?? (Array.isArray(param.options) ? param.options : null) ?? param.restrictions?.allowedValues ?? [];
       const match = matchDictionaryValue(sheetValue, opts);
 
       if (match) {

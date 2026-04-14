@@ -82,9 +82,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Missing categoryId' }, { status: 400 });
   }
 
-  if (!/^\d+$/.test(categoryId)) {
+  if (!categoryId.match(/^[\w-]+$/)) {
     return NextResponse.json(
-      { error: `Nieprawidłowe categoryId "${categoryId}" — musi być numeryczne (np. 261467)` },
+      { error: `Nieprawidłowe categoryId "${categoryId}"` },
       { status: 400 },
     );
   }
@@ -98,13 +98,20 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [parameters, commissionInfo] = await Promise.all([
-      getCategoryParameters(categoryId),
-      getCommissionInfo(categoryId),
-    ]);
+    // Parametry są krytyczne — ładuj je najpierw, prowizja jest opcjonalna
+    const parameters = await getCategoryParameters(categoryId);
+
+    let commissionInfo = '';
+    try {
+      commissionInfo = await getCommissionInfo(categoryId);
+    } catch (e) {
+      console.warn(`[Parameters] Commission fetch failed for ${categoryId}:`, e instanceof Error ? e.message : e);
+    }
+
     return NextResponse.json({ parameters, commissionInfo });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[Parameters] getCategoryParameters failed for ${categoryId}:`, message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -51,8 +51,15 @@ export interface AllegroParameter {
     max?: number;
     allowedValues?: AllegroParameterOption[];
     multipleChoices?: boolean;
+    minLength?: number;
+    maxLength?: number;
+    allowedNumberOfValues?: number;
+    range?: boolean;
+    precision?: number;
   };
   options?: AllegroParameterOption[];
+  /** Prawdziwe API Allegro zwraca opcje w polu dictionary, nie options */
+  dictionary?: AllegroParameterOption[];
 }
 
 export interface AllegroToken {
@@ -114,7 +121,7 @@ export type ProductMode = 'new' | 'edit' | 'variant' | 'bundle';
 export interface FieldSelection {
   // mandatory (always true)
   inventory_id: true;
-  is_bundle: true;
+  is_bundle: boolean;
   tax_rate: true;
   name: true;
   // optional
@@ -148,6 +155,7 @@ export interface ProductSession {
   mode: ProductMode;
   product_id?: string;
   parent_id?: string;
+  is_bundle?: boolean;
   bundle_products?: Record<string, number>;
   data: ProductData;
   allegroCategory?: AllegroCategory;
@@ -159,6 +167,7 @@ export interface ProductSession {
   inventoryId?: number;
   defaultWarehouse?: string;
   fieldSelection?: Partial<FieldSelection>;
+  extraFieldValues?: Record<string, string>;
   ready: boolean;
   // Image management & description generation
   imagesMeta?: ImageMeta[];
@@ -264,6 +273,14 @@ export interface ChatAction {
   scrapeUrl?: string
   /** For reorder_section_images: new ordered list of image URLs */
   imageUrls?: string[]
+}
+
+// ─── Section Targeting ───
+
+export interface TargetableSection {
+  id: string
+  label: string
+  type: 'title' | 'description-section' | 'parameters' | 'images'
 }
 
 // ─── Description Versioning ───

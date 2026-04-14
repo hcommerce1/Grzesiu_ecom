@@ -5,12 +5,13 @@ import { Send, Loader2, Bot, User, X, Sparkles, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import type { DescriptionSection, AllegroParameter, ImageMeta, ChatAction } from "@/lib/types"
+import type { DescriptionSection, AllegroParameter, ImageMeta, ChatAction, TargetableSection } from "@/lib/types"
 
 interface Message {
   role: "user" | "assistant"
   content: string
   actions?: ChatAction[]
+  targetedSections?: TargetableSection[]
 }
 
 interface ChatResult {
@@ -41,6 +42,10 @@ interface ClaudeChatProps {
   autoAskUnfilled?: boolean
   /** Product data for scraping context */
   productData?: { title: string; description: string; attributes: Record<string, string> }
+  /** Section targeting */
+  targetedSections?: TargetableSection[]
+  onRemoveTargetedSection?: (id: string) => void
+  onClearTargets?: () => void
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -74,6 +79,9 @@ export function ClaudeChat({
   onRegenerateRequest,
   autoAskUnfilled,
   // productData available via props for future use
+  targetedSections,
+  onRemoveTargetedSection,
+  onClearTargets,
 }: ClaudeChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -265,10 +273,25 @@ export function ClaudeChat({
     const text = input.trim()
     if (!text || loading) return
 
-    const userMessage: Message = { role: "user", content: text }
+    // Capture targeted sections before clearing
+    const currentTargets = targetedSections?.length ? [...targetedSections] : undefined
+
+    const userMessage: Message = {
+      role: "user",
+      content: text,
+      targetedSections: currentTargets,
+    }
     setMessages((prev) => [...prev, userMessage])
     setInput("")
+    onClearTargets?.()
     setLoading(true)
+
+    // Build message with targeting context
+    let messageToSend = text
+    if (currentTargets?.length) {
+      const labels = currentTargets.map(s => s.label).join(', ')
+      messageToSend = `[Dotyczy: ${labels}]\n${text}`
+    }
 
     try {
       if (isDescriptionMode) {
@@ -278,7 +301,7 @@ export function ClaudeChat({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            message: text,
+            message: messageToSend,
             currentTitle,
             sections,
             currentParameters: currentParameters || {},
@@ -382,6 +405,16 @@ export function ClaudeChat({
                   : "bg-muted text-foreground"
               )}
             >
+              {/* Targeted sections badges on user messages */}
+              {msg.role === "user" && msg.targetedSections && msg.targetedSections.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-1.5 pb-1.5 border-b border-primary-foreground/20">
+                  {msg.targetedSections.map(s => (
+                    <span key={s.id} className="inline-flex items-center gap-0.5 rounded bg-primary-foreground/20 px-1.5 py-0.5 text-[10px] font-medium">
+                      {s.label}
+                    </span>
+                  ))}
+                </div>
+              )}
               <span className="whitespace-pre-wrap">{msg.content}</span>
               {/* Wykonane akcje */}
               {msg.actions && msg.actions.length > 0 && (
@@ -415,8 +448,26 @@ export function ClaudeChat({
         <div ref={endRef} />
       </div>
 
+      {/* Targeted sections pills */}
+      {targetedSections && targetedSections.length > 0 && (
+        <div className="px-3 pt-2 pb-0 flex flex-wrap gap-1.5 border-t">
+          <span className="text-[10px] text-muted-foreground self-center mr-0.5">Dotyczy:</span>
+          {targetedSections.map(s => (
+            <Badge key={s.id} variant="secondary" className="gap-1 text-[10px] pr-1">
+              {s.label}
+              <button
+                onClick={() => onRemoveTargetedSection?.(s.id)}
+                className="ml-0.5 rounded-full hover:bg-foreground/10 p-0.5"
+              >
+                <X className="size-2.5" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+
       {/* Input */}
-      <div className="border-t p-3 flex gap-2">
+      <div className={cn("p-3 flex gap-2", (!targetedSections || targetedSections.length === 0) && "border-t")}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
