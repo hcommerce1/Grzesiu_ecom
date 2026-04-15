@@ -1,21 +1,23 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { SearchBar } from "@/components/SearchBar"
 import { CollapsibleProductItem, type ScrapedItem } from "@/components/CollapsibleProductItem"
 import { AppHeader } from "@/components/AppHeader"
 import { EditProductsTab } from "@/components/EditProductsTab"
 import { motion, AnimatePresence } from "framer-motion"
 import { staggerContainer, staggerItem } from "@/components/motion/variants"
-import { Package, Loader2, Search, BarChart2, FileSpreadsheet } from "lucide-react"
+import { Package, Loader2, Search, BarChart2, FileSpreadsheet, Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { GoogleSheetsTab } from "@/components/GoogleSheetsTab"
 import { AllegroAuthGate } from "@/components/AllegroAuthGate"
 import { ScrapeHistoryPanel } from "@/components/ScrapeHistoryPanel"
 import { useScrapeHistoryStore, type ScrapeHistoryEntry } from "@/lib/stores/scrape-history-store"
+import { useUserStore } from "@/lib/stores/user-store"
+import { MassListingTab } from "@/components/MassListingTab"
 import type { ScrapeResponse } from "@/lib/types"
 
-type Tab = "nowe" | "edytuj" | "sheets"
+type Tab = "nowe" | "edytuj" | "sheets" | "mass-listing"
 
 let idCounter = 0
 
@@ -29,6 +31,11 @@ export default function Home() {
   const processingRef = useRef(false)
   const queueRef = useRef<{ id: string; url: string }[]>([])
   const { getEntry, addEntry } = useScrapeHistoryStore()
+  const { user, fetchUser } = useUserStore()
+
+  useEffect(() => {
+    fetchUser()
+  }, [])
 
   const handleLoadFromHistory = (entry: ScrapeHistoryEntry) => {
     const item: ScrapedItem = {
@@ -182,6 +189,19 @@ export default function Home() {
             Google Sheets
           </button>
 
+          <button
+            onClick={() => setTab("mass-listing")}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+              tab === "mass-listing"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Layers className="size-4" />
+            Wystawianie masowe
+          </button>
+
           <div className="flex-1" />
         </div>
 
@@ -255,6 +275,11 @@ export default function Home() {
         {/* Tab: Google Sheets — kept mounted to preserve state */}
         <div style={{ display: tab === "sheets" ? undefined : "none" }}>
           <GoogleSheetsTab />
+        </div>
+
+        {/* Tab: Wystawianie masowe */}
+        <div style={{ display: tab === "mass-listing" ? undefined : "none" }}>
+          <MassListingTab user={user} />
         </div>
         </AllegroAuthGate>
       </main>

@@ -53,7 +53,7 @@ export function CollapsibleProductItem({ item, index, onRemove }: Props) {
 
   return (
     <div className={cn(
-      "rounded-xl ring-1 ring-foreground/10 bg-card overflow-hidden transition-shadow",
+      "rounded-xl ring-1 ring-foreground/10 bg-card overflow-clip transition-shadow",
       isOpen && "shadow-sm"
     )}>
       {/* Header */}
@@ -152,7 +152,7 @@ export function CollapsibleProductItem({ item, index, onRemove }: Props) {
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="overflow-hidden"
+            className="overflow-clip"
           >
             <div className="border-t border-border p-4 space-y-4 bg-background/60">
               {item.status === "error" && (

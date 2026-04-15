@@ -736,6 +736,62 @@ async function clickAllegroGallery(page: import('playwright').Page): Promise<voi
     } catch { /* gallery interaction failed — not critical */ }
 }
 
+// ─── fetchPageHtml — pobiera surowy HTML strony (do listing-scrapera) ───
+export async function fetchPageHtml(url: string): Promise<string> {
+    if (SCRAPER_MODE === 'decodo' && DECODO_API_USERNAME && DECODO_API_PASSWORD) {
+        const credentials = Buffer.from(`${DECODO_API_USERNAME}:${DECODO_API_PASSWORD}`).toString('base64');
+        const body = {
+            target: 'universal',
+            url,
+            headless: 'html',
+            locale: 'pl-PL',
+            geo: 'Poland',
+        };
+        try {
+            const res = await fetch('https://scraper-api.decodo.com/v2/scrape', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Basic ${credentials}` },
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(60000),
+            });
+            if (!res.ok) throw new Error(`Decodo HTTP ${res.status}`);
+            const json = await res.json();
+            const results = json.results;
+            const first = Array.isArray(results) && results.length > 0 ? results[0] : json;
+            const html = typeof first.content === 'string' ? first.content : (typeof json.content === 'string' ? json.content : (json.body ?? ''));
+            if (html.length > 100) return html;
+        } catch (err) {
+            console.warn('[fetchPageHtml] Decodo error:', err instanceof Error ? err.message : err);
+        }
+    }
+
+    if (SCRAPER_MODE === 'unblocker' && SCRAPINGBEE_API_KEY) {
+        try {
+            const proxyUrl = `http://${SCRAPINGBEE_API_KEY}:render_js=False&premium_proxy=True@proxy.scrapingbee.com:8886`;
+            const res = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0' },
+                // @ts-expect-error node-fetch proxy
+                agent: proxyUrl,
+                signal: AbortSignal.timeout(30000),
+            });
+            if (res.ok) return await res.text();
+        } catch (err) {
+            console.warn('[fetchPageHtml] ScrapingBee error:', err instanceof Error ? err.message : err);
+        }
+    }
+
+    // Plain fetch fallback
+    const res = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'pl-PL,pl;q=0.9',
+        },
+        signal: AbortSignal.timeout(30000),
+    });
+    return await res.text();
+}
+
 // ─── Auto-scroll to trigger lazy-loaded content ───
 async function autoScroll(page: import('playwright').Page): Promise<void> {
     await page.evaluate(async () => {

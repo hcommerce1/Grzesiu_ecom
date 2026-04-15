@@ -1,0 +1,692 @@
+"use client"
+
+import { useState, useRef, useCallback } from "react"
+import { Store, Trash2, Loader2, CheckCircle2, XCircle, Clock, Send, ChevronLeft } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import { toast } from "sonner"
+import { useSellerScraperStore } from "@/lib/stores/seller-scraper-store"
+import { SellerProductGrid } from "@/components/seller/SellerProductGrid"
+import { GroupingView } from "@/components/seller/GroupingView"
+import { DiffFieldsStep } from "@/components/seller/DiffFieldsStep"
+import { DescriptionTemplateStep } from "@/components/seller/DescriptionTemplateStep"
+import { BatchReviewStep } from "@/components/seller/BatchReviewStep"
+import { BaselinkerWorkflowPanel } from "@/components/BaselinkerWorkflowPanel"
+import { detectDiffFields, templatizeDescription, generateTitleTemplate } from "@/lib/batch-session"
+import type { ProductData, AIChatMessage, SellerScrapeSession, ProductSession, GeneratedDescription } from "@/lib/types"
+
+interface Props {
+  onNavigateToMassListing: () => void
+}
+
+// ─── AI Chat Sidebar ───
+function AIChatSidebar({
+  sessionId,
+  step,
+  listings,
+  groups,
+  messages,
+  onMessages,
+  onActions,
+}: {
+  sessionId: string
+  step: string
+  listings: unknown[]
+  groups: Record<string, string[]>
+  messages: AIChatMessage[]
+  onMessages: (msgs: AIChatMessage[]) => void
+  onActions: (actions: unknown[]) => void
+}) {
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+
+  const send = async () => {
+    if (!input.trim() || sending) return
+    const userMsg: AIChatMessage = { role: 'user', content: input.trim() }
+    const newMessages = [...messages, userMsg]
+    onMessages(newMessages)
+    setInput('')
+    setSending(true)
+
+    try {
+      const res = await fetch(`/api/seller-scrape/${sessionId}/ai-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: newMessages,
+          context: { step, listings, groups },
+        }),
+      })
+      const data = await res.json()
+      const assistantMsg: AIChatMessage = { role: 'assistant', content: data.reply ?? '' }
+      onMessages([...newMessages, assistantMsg])
+      if (data.actions?.length > 0) {
+        onActions(data.actions)
+      }
+    } catch {
+      toast.error('Błąd AI chatu')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full border-l border-border">
+      <div className="px-3 py-2 border-b border-border bg-muted/30">
+        <span className="text-sm font-medium">AI Asystent</span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {messages.length === 0 && (
+          <p className="text-xs text-muted-foreground text-center mt-4">
+            Możesz poprosić o zaznaczenie, grupowanie lub inne akcje.
+          </p>
+        )}
+        {messages.map((msg, i) => (
+          <div key={i} className={cn(
+            "p-2 rounded-lg text-xs",
+            msg.role === 'user' ? "bg-primary/10 text-primary ml-4" : "bg-muted text-foreground mr-4"
+          )}>
+            {msg.content}
+          </div>
+        ))}
+        {sending && <div className="text-xs text-muted-foreground">Myślę...</div>}
+      </div>
+      <div className="p-3 border-t border-border flex gap-2">
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+          placeholder="Napisz polecenie..."
+          className="flex-1 text-sm border border-border rounded px-2 py-1.5 bg-background"
+        />
+        <Button size="icon" className="size-8 shrink-0" onClick={send} disabled={!input.trim() || sending}>
+          <Send className="size-3.5" />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main Component ───
+export function SellerScraperTab({ onNavigateToMassListing }: Props) {
+  const store = useSellerScraperStore()
+  const [urlInput, setUrlInput] = useState('')
+  const [isScrapingUrl, setIsScrapingUrl] = useState(false)
+  const [sessions, setSessions] = useState<SellerScrapeSession[]>([])
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  const [deepScrapeQueue, setDeepScrapeQueue] = useState<string[]>([])
+  const [deepScrapeProgress, setDeepScrapeProgress] = useState(0)
+  const [isDeepScraping, setIsDeepScraping] = useState(false)
+  const [descTemplatePlaceholders, setDescTemplatePlaceholders] = useState<string[]>([])
+  const [currentTemplateSession, setCurrentTemplateSession] = useState<ProductSession | null>(null)
+  const [descriptionTemplate, setDescriptionTemplate] = useState<GeneratedDescription | null>(null)
+  const [titleTemplate, setTitleTemplate] = useState<string | null>(null)
+  const abortRef = useRef(false)
+
+  // Load sessions on first open
+  const loadSessions = useCallback(async () => {
+    if (sessionsLoaded) return
+    try {
+      const res = await fetch('/api/seller-scrape')
+      const data = await res.json()
+      setSessions(data.sessions ?? [])
+      setSessionsLoaded(true)
+    } catch { /* ignore */ }
+  }, [sessionsLoaded])
+
+  // ─── Start scraping ───
+  const handleStartScrape = async () => {
+    if (!urlInput.trim()) return
+    setIsScrapingUrl(true)
+    store.reset()
+    abortRef.current = false
+    try {
+      const res = await fetch('/api/seller-scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sellerUrl: urlInput.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        toast.error(data.error ?? 'Błąd scrape')
+        return
+      }
+      store.setSession(data.session, data.sessionId)
+      store.setListings(data.listings ?? [])
+      store.setTotalPages(data.totalPages ?? 1)
+      store.setCurrentPage(1)
+      store.setStep('scraping')
+
+      // Auto-paginate if more pages
+      if (data.totalPages > 1) {
+        await paginateScrape(data.sessionId, data.session.sellerUrl, 2, data.totalPages)
+      } else {
+        store.setStep('grid')
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Błąd scrape')
+    } finally {
+      setIsScrapingUrl(false)
+    }
+  }
+
+  // ─── Paginate scraping ───
+  const paginateScrape = async (sessionId: string, sellerUrl: string, startPage: number, totalPages: number) => {
+    for (let page = startPage; page <= totalPages; page++) {
+      if (abortRef.current) break
+      store.setCurrentPage(page)
+      try {
+        const res = await fetch(`/api/seller-scrape/${sessionId}/scrape-page`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ page }),
+        })
+        const data = await res.json()
+        if (data.products) {
+          store.addListings(data.products.map((p: { url: string; externalId?: string; title: string; thumbnailUrl?: string; price?: string; currency?: string }) => ({
+            id: crypto.randomUUID(),
+            sessionId,
+            productUrl: p.url,
+            productIdExt: p.externalId,
+            title: p.title,
+            thumbnailUrl: p.thumbnailUrl,
+            price: p.price,
+            currency: p.currency ?? 'PLN',
+            pageNumber: page,
+            selected: false,
+            deepScraped: false,
+          })))
+        }
+        if (!data.hasMore) break
+        await new Promise(r => setTimeout(r, 1500))
+      } catch {
+        break
+      }
+    }
+    store.setStep('grid')
+  }
+
+  // ─── Deep scrape selected ───
+  const handleDeepScrape = async () => {
+    const selected = store.listings.filter(l => l.selected)
+    if (selected.length === 0) return
+    store.setStep('deep-scrape')
+    setDeepScrapeProgress(0)
+    setIsDeepScraping(true)
+    abortRef.current = false
+
+    const queue = selected.map(l => l.id)
+    setDeepScrapeQueue([...queue])
+
+    for (let i = 0; i < queue.length; i++) {
+      if (abortRef.current) break
+      const listingId = queue[i]
+      try {
+        const res = await fetch(`/api/seller-scrape/${store.sessionId}/deep-scrape`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ listingId }),
+        })
+        const data = await res.json()
+        store.updateListing(listingId, {
+          deepScraped: true,
+          deepScrapeData: data.data,
+          deepScrapeError: data.error,
+        })
+      } catch (err) {
+        store.updateListing(listingId, {
+          deepScraped: true,
+          deepScrapeError: err instanceof Error ? err.message : 'Błąd',
+        })
+      }
+      setDeepScrapeProgress(i + 1)
+      if (i < queue.length - 1) await new Promise(r => setTimeout(r, 1500))
+    }
+
+    setIsDeepScraping(false)
+
+    // Auto-suggest groups with AI
+    const deepScraped = store.listings.filter(l => l.deepScraped && l.deepScrapeData)
+    if (deepScraped.length > 0 && store.sessionId) {
+      store.setStep('grouping')
+      await autoSuggestGroups(deepScraped)
+    } else {
+      store.setStep('grouping')
+    }
+  }
+
+  // ─── Auto-suggest groups using AI ───
+  const autoSuggestGroups = async (deepScrapedListings: typeof store.listings) => {
+    if (!store.sessionId) return
+    try {
+      const listingsSummary = deepScrapedListings.slice(0, 50).map(l => ({
+        id: l.id,
+        title: l.title,
+        price: l.price,
+      }))
+      const res = await fetch(`/api/seller-scrape/${store.sessionId}/ai-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{
+            role: 'user',
+            content: `Zaproponuj grupy dla tych ${deepScrapedListings.length} produktów. Zwróć move_to_group akcje dla każdego produktu.`,
+          }],
+          context: { step: 'grouping', listings: listingsSummary },
+        }),
+      })
+      const data = await res.json()
+      if (data.actions) applyAIChatActions(data.actions)
+      store.addChatMessage({ role: 'user', content: `[Auto-grupowanie ${deepScrapedListings.length} produktów]` })
+      store.addChatMessage({ role: 'assistant', content: data.reply ?? 'Zaproponowałem grupy.' })
+    } catch { /* ignore */ }
+  }
+
+  // ─── Apply AI chat actions ───
+  const applyAIChatActions = (actions: unknown[]) => {
+    for (const action of actions as Array<{ type: string; ids?: string[]; groupName?: string; field?: string; enabled?: boolean }>) {
+      if (action.type === 'select' && action.ids) {
+        for (const id of action.ids) {
+          store.updateListing(id, { selected: true })
+        }
+      } else if (action.type === 'deselect' && action.ids) {
+        for (const id of action.ids) {
+          store.updateListing(id, { selected: false })
+        }
+      } else if (action.type === 'move_to_group' && action.ids && action.groupName) {
+        store.moveToGroup(action.ids, action.groupName)
+      } else if (action.type === 'create_group' && action.groupName) {
+        store.createGroup(action.groupName)
+      } else if (action.type === 'set_diff_field' && action.field !== undefined) {
+        store.toggleDiffField(action.field)
+      }
+    }
+  }
+
+  // ─── Group selected to list ───
+  const handleListGroup = useCallback((groupName: string) => {
+    store.setActiveGroup(groupName)
+    // Get listings in this group
+    const groupListingIds = store.groups[groupName] ?? []
+    const groupListings = store.listings.filter(l => groupListingIds.includes(l.id) && l.deepScrapeData)
+    const products = groupListings.map(l => l.deepScrapeData!).filter(Boolean) as ProductData[]
+
+    if (products.length === 0) {
+      toast.error('Brak produktów z danymi w tej grupie')
+      return
+    }
+
+    // Detect diff fields
+    const fields = detectDiffFields(products)
+    store.setDiffFields(fields)
+    store.setStep('diff-fields')
+  }, [store])
+
+  // ─── Save template from BL workflow ───
+  const handleSaveTemplate = useCallback((session: ProductSession) => {
+    setCurrentTemplateSession(session)
+    store.setTemplateSession(session)
+
+    // Generate title template
+    const groupListingIds = store.activeGroup ? (store.groups[store.activeGroup] ?? []) : []
+    const groupListings = store.listings.filter(l => groupListingIds.includes(l.id) && l.deepScrapeData)
+    if (groupListings.length > 0) {
+      const firstProduct = groupListings[0].deepScrapeData!
+      const titleTpl = generateTitleTemplate(session.data.title, firstProduct.attributes ?? {}, store.selectedDiffFields)
+      setTitleTemplate(titleTpl !== session.data.title ? titleTpl : null)
+    }
+
+    // If description exists, templatize it
+    if (session.generatedDescription) {
+      const firstProduct = groupListings[0]?.deepScrapeData
+      if (firstProduct) {
+        const { templated, placeholders } = templatizeDescription(
+          session.generatedDescription,
+          firstProduct.attributes ?? {},
+          store.selectedDiffFields
+        )
+        setDescriptionTemplate(templated)
+        setDescTemplatePlaceholders(placeholders)
+      }
+    }
+
+    store.setStep('desc-template')
+  }, [store])
+
+  // ─── Submit batch ───
+  const handleBatchSubmit = async (batchType: 'independent' | 'variants') => {
+    const groupName = store.activeGroup ?? ''
+    const groupListingIds = store.groups[groupName] ?? []
+    const groupListings = store.listings.filter(l => groupListingIds.includes(l.id) && l.deepScraped && !l.deepScrapeError)
+
+    if (groupListings.length === 0) {
+      toast.error('Brak gotowych produktów')
+      return
+    }
+
+    const session = store.templateSession
+    if (!session) {
+      toast.error('Brak template sesji')
+      return
+    }
+
+    const items = groupListings.map(l => ({
+      productData: l.deepScrapeData,
+      label: l.title,
+      thumbnailUrl: l.thumbnailUrl,
+      sourceListingId: l.id,
+    }))
+
+    const res = await fetch('/api/batch-jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: `${groupName} — ${store.session?.sellerUsername} (${items.length} szt.)`,
+        source: 'seller-scraper',
+        sourceId: store.sessionId,
+        batchType,
+        templateSession: session,
+        diffFields: store.selectedDiffFields,
+        descriptionTemplate: descriptionTemplate,
+        titleTemplate,
+        items,
+      }),
+    })
+
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      toast.error(data.error ?? 'Błąd tworzenia batcha')
+      return
+    }
+
+    // Resume job
+    await fetch(`/api/batch-jobs/${data.jobId}/resume`, { method: 'POST' })
+    toast.success(`Batch job stworzony — ${items.length} produktów`)
+    onNavigateToMassListing()
+  }
+
+  // ─── Load sessions on input step ───
+  if (store.step === 'input' && !sessionsLoaded) {
+    loadSessions()
+  }
+
+  // ─── Render current step ───
+
+  // Template step — full-screen
+  if (store.step === 'template') {
+    const groupListingIds = store.activeGroup ? (store.groups[store.activeGroup] ?? []) : []
+    const groupListings = store.listings.filter(l => groupListingIds.includes(l.id) && l.deepScrapeData)
+    const firstProduct = groupListings[0]?.deepScrapeData
+
+    if (!firstProduct) {
+      store.setStep('grouping')
+      return null
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => store.setStep('diff-fields')}>
+            <ChevronLeft className="size-4 mr-1" /> Powrót
+          </Button>
+          <h3 className="font-semibold">Konfiguruj template: {store.activeGroup}</h3>
+        </div>
+        <BaselinkerWorkflowPanel
+          productData={firstProduct}
+          onClose={() => store.setStep('diff-fields')}
+          onSaveTemplate={handleSaveTemplate}
+        />
+      </div>
+    )
+  }
+
+  const showChat = ['grid', 'deep-scrape', 'grouping', 'diff-fields', 'desc-template', 'review'].includes(store.step)
+  const groupListingIds = store.activeGroup ? (store.groups[store.activeGroup] ?? []) : []
+  const activeGroupListings = store.listings.filter(l => groupListingIds.includes(l.id))
+
+  return (
+    <div className={cn("space-y-4", showChat && "grid grid-cols-[1fr_300px] gap-0 space-y-0")}>
+      {/* Main content */}
+      <div className={cn("space-y-4", showChat && "p-0 pr-4")}>
+        {/* Back button */}
+        {store.step !== 'input' && (
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const prevSteps: Record<string, string> = {
+                  scraping: 'input', grid: 'input', 'deep-scrape': 'grid',
+                  grouping: 'grid', 'diff-fields': 'grouping', template: 'diff-fields',
+                  'desc-template': 'template', review: 'desc-template',
+                }
+                store.setStep((prevSteps[store.step] ?? 'input') as import('@/lib/stores/seller-scraper-store').SellerScraperStep)
+              }}
+            >
+              <ChevronLeft className="size-4 mr-1" /> Powrót
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              {store.session?.sellerUsername} · {store.listings.length} produktów
+            </span>
+          </div>
+        )}
+
+        {/* STEP: input */}
+        {store.step === 'input' && (
+          <div className="space-y-6 max-w-xl">
+            <div>
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Store className="size-5" /> Scrapuj listing sprzedawcy
+              </h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Podaj URL strony sprzedawcy (Allegro, OLX i inne)
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                value={urlInput}
+                onChange={e => setUrlInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleStartScrape() }}
+                placeholder="https://allegro.pl/uzytkownik/NazwaSprzedawcy lub inny URL listy produktów"
+                className="flex-1 border border-border rounded-lg px-3 py-2 text-sm bg-background"
+              />
+              <Button onClick={handleStartScrape} disabled={isScrapingUrl || !urlInput.trim()}>
+                {isScrapingUrl ? <Loader2 className="size-4 animate-spin" /> : 'Scrapuj'}
+              </Button>
+            </div>
+
+            {/* Session history */}
+            {sessions.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Historia sesji</h4>
+                <div className="space-y-1.5">
+                  {sessions.map(s => (
+                    <div key={s.id} className="flex items-center gap-3 p-2.5 border border-border rounded-lg hover:bg-muted/30">
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-medium">{s.sellerUsername}</span>
+                        <span className="text-xs text-muted-foreground ml-2">{s.totalProducts} produktów</span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          const res = await fetch(`/api/seller-scrape/${s.id}`)
+                          const data = await res.json()
+                          store.setSession(data.session, s.id)
+                          store.setListings(data.listings ?? [])
+                          store.setStep('grid')
+                        }}
+                      >
+                        Wznów
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-destructive"
+                        onClick={async () => {
+                          await fetch(`/api/seller-scrape/${s.id}`, { method: 'DELETE' })
+                          setSessions(prev => prev.filter(x => x.id !== s.id))
+                        }}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* STEP: scraping */}
+        {store.step === 'scraping' && (
+          <div className="space-y-4 max-w-xl">
+            <h3 className="font-semibold">Scrapowanie: {store.session?.sellerUsername}</h3>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span>Strona {store.currentPage} / {store.totalPages || '?'}</span>
+                <span>{store.listings.length} produktów</span>
+              </div>
+              <div className="h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: store.totalPages > 0 ? `${(store.currentPage / store.totalPages) * 100}%` : '10%' }}
+                />
+              </div>
+            </div>
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {store.listings.slice(-10).map(l => (
+                <div key={l.id} className="text-xs text-muted-foreground">• {l.title}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP: grid */}
+        {store.step === 'grid' && (
+          <SellerProductGrid
+            listings={store.listings}
+            onToggle={store.toggleSelected}
+            onSelectAll={store.selectAll}
+            onNext={handleDeepScrape}
+          />
+        )}
+
+        {/* STEP: deep-scrape */}
+        {store.step === 'deep-scrape' && (
+          <div className="space-y-4 max-w-xl">
+            <div>
+              <h3 className="font-semibold">Deep scrape</h3>
+              <div className="flex items-center justify-between text-sm mt-1">
+                <span>{deepScrapeProgress} / {deepScrapeQueue.length}</span>
+                <span className="text-muted-foreground">{isDeepScraping ? 'W toku...' : 'Gotowe'}</span>
+              </div>
+              <div className="h-2 bg-muted rounded-full overflow-hidden mt-2">
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: deepScrapeQueue.length > 0 ? `${(deepScrapeProgress / deepScrapeQueue.length) * 100}%` : '0%' }}
+                />
+              </div>
+            </div>
+            <div className="space-y-1 max-h-64 overflow-y-auto">
+              {store.listings.filter(l => l.selected).map(l => (
+                <div key={l.id} className="flex items-center gap-2 text-sm">
+                  {l.deepScraped ? (
+                    l.deepScrapeError
+                      ? <XCircle className="size-4 text-destructive shrink-0" />
+                      : <CheckCircle2 className="size-4 text-green-500 shrink-0" />
+                  ) : (
+                    deepScrapeQueue.indexOf(l.id) === deepScrapeProgress
+                      ? <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" />
+                      : <Clock className="size-4 text-muted-foreground shrink-0" />
+                  )}
+                  <span className="truncate flex-1">{l.title}</span>
+                  {l.deepScrapeError && (
+                    <span className="text-xs text-destructive truncate max-w-[150px]">{l.deepScrapeError}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP: grouping */}
+        {store.step === 'grouping' && (
+          <div className="space-y-4">
+            <h3 className="font-semibold">Grupowanie produktów</h3>
+            <GroupingView
+              listings={store.listings.filter(l => l.selected)}
+              groups={store.groups}
+              onMoveToGroup={store.moveToGroup}
+              onCreateGroup={store.createGroup}
+              onListGroup={handleListGroup}
+            />
+          </div>
+        )}
+
+        {/* STEP: diff-fields */}
+        {store.step === 'diff-fields' && (
+          <DiffFieldsStep
+            groupName={store.activeGroup ?? ''}
+            diffFields={store.diffFields}
+            selectedFields={store.selectedDiffFields}
+            onToggle={store.toggleDiffField}
+            onNext={() => store.setStep('template')}
+          />
+        )}
+
+        {/* STEP: desc-template */}
+        {store.step === 'desc-template' && (
+          currentTemplateSession?.generatedDescription && descriptionTemplate ? (
+            <DescriptionTemplateStep
+              description={descriptionTemplate}
+              placeholders={descTemplatePlaceholders}
+              groupListings={activeGroupListings}
+              onNext={(desc) => {
+                setDescriptionTemplate(desc)
+                store.setStep('review')
+              }}
+            />
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">Brak opisu w template — pomijam krok.</p>
+              <Button onClick={() => store.setStep('review')}>Dalej: Review</Button>
+            </div>
+          )
+        )}
+
+        {/* STEP: review */}
+        {store.step === 'review' && store.templateSession && (
+          <BatchReviewStep
+            groupName={store.activeGroup ?? ''}
+            listings={activeGroupListings}
+            selectedDiffFields={store.selectedDiffFields}
+            diffFields={store.diffFields}
+            templateSession={store.templateSession}
+            descriptionTemplate={descriptionTemplate}
+            titleTemplate={titleTemplate}
+            onSubmit={handleBatchSubmit}
+          />
+        )}
+      </div>
+
+      {/* AI Chat Sidebar */}
+      {showChat && store.sessionId && (
+        <AIChatSidebar
+          sessionId={store.sessionId}
+          step={store.step}
+          listings={store.listings.map(l => ({ id: l.id, title: l.title, price: l.price, selected: l.selected, groupName: l.groupName }))}
+          groups={store.groups}
+          messages={store.chatMessages}
+          onMessages={(msgs) => {
+            // Only add the last message (onMessages is called once per new message)
+            const lastMsg = msgs[msgs.length - 1]
+            if (lastMsg) store.addChatMessage(lastMsg)
+          }}
+          onActions={applyAIChatActions}
+        />
+      )}
+    </div>
+  )
+}

@@ -40,6 +40,8 @@ interface Props {
   sheetProductId?: string
   sheetMeta?: SheetMeta
   onSheetDone?: (blProductId: number) => void
+  /** When provided: last step becomes "Zapisz jako template" instead of "Wyślij" */
+  onSaveTemplate?: (session: ProductSession) => void
 }
 
 type Step = "inventory" | "category" | "images" | "fields-params" | "preview" | "approval"
@@ -53,7 +55,12 @@ const STEPS: { key: Step; label: string; icon: React.ReactNode }[] = [
   { key: "approval", label: "Wyślij", icon: <Send className="size-3.5" /> },
 ]
 
-export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone }: Props) {
+// Dynamic label helper — used in render
+function getApprovalLabel(onSaveTemplate?: (session: ProductSession) => void): string {
+  return onSaveTemplate ? "Zapisz template" : "Wyślij"
+}
+
+export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone, onSaveTemplate }: Props) {
   const [currentStep, setCurrentStep] = useState<Step>("inventory")
   const [session, setSession] = useState<ProductSession | null>(null)
   const [blCache, setBlCache] = useState<BLCache | null>(null)
@@ -877,7 +884,24 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       case "approval":
         return (
           <div className="space-y-4">
-            {successId ? (
+            {onSaveTemplate ? (
+              // Template mode — save session instead of submitting
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Zapisz tę konfigurację jako template dla masowego wystawiania.
+                </p>
+                <Button
+                  onClick={() => {
+                    if (session) onSaveTemplate?.(session)
+                  }}
+                  className="w-full gap-2"
+                  disabled={!session}
+                >
+                  <CheckCircle2 className="size-4" />
+                  Zapisz jako template
+                </Button>
+              </div>
+            ) : successId ? (
               <div className="flex flex-col items-center gap-3 py-6 text-center">
                 <CheckCircle2 className="size-12 text-green-600" />
                 <p className="font-semibold">Wysłano pomyślnie!</p>
@@ -937,6 +961,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               const isDone = i < currentStepIndex
               const isActive = step.key === currentStep
               const isClickable = i <= maxVisitedStep || i === maxVisitedStep + 1
+              const label = (step.key === 'approval' && onSaveTemplate) ? 'Zapisz template' : step.label
 
               return (
                 <button
@@ -954,7 +979,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                   )}
                 >
                   {isDone ? <CheckCircle2 className="size-3.5 text-green-600 shrink-0" /> : step.icon}
-                  <span>{step.label}</span>
+                  <span>{label}</span>
                 </button>
               )
             })}
@@ -980,7 +1005,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
         {/* Prawa kolumna: sticky AI Chat — tylko na podglądzie */}
         {currentStep === 'preview' && (
-          <div className="sticky top-4 self-start" style={{ height: 'calc(100vh - 2rem)' }}>
+          <div className="sticky top-[4.5rem] self-start" style={{ height: 'calc(100vh - 5rem)' }}>
             <ClaudeChat
               currentTitle={localTitle}
               sections={generatedDescription?.sections || []}

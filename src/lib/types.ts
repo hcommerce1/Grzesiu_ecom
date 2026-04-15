@@ -378,3 +378,139 @@ export interface ImageGenResult {
   error?: string;
   costEstimate?: string;
 }
+
+// ─── Batch Jobs Types ───
+
+export type BatchStatus = 'pending' | 'running' | 'paused' | 'done' | 'error'
+export type BatchItemStatus = 'pending' | 'processing' | 'done' | 'error' | 'skipped'
+export type BatchType = 'independent' | 'variants'
+
+export interface BatchJob {
+  id: string
+  source: string
+  sourceId?: string
+  label: string
+  status: BatchStatus
+  batchType: BatchType
+  templateSession: ProductSession
+  diffFields: string[]
+  descriptionTemplate?: GeneratedDescription
+  titleTemplate?: string
+  totalItems: number
+  completedItems: number
+  failedItems: number
+  parentProductId?: string
+  lastActivity?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BatchJobItem {
+  id: string
+  batchJobId: string
+  orderIndex: number
+  status: BatchItemStatus
+  productData: ProductData
+  blProductId?: string
+  errorMessage?: string
+  overrideData?: Partial<ProductData>
+  label?: string
+  thumbnailUrl?: string
+  sourceListingId?: string
+}
+
+export interface BatchJobProgress {
+  total: number
+  done: number
+  failed: number
+  pending: number
+  skipped: number
+}
+
+// ─── Seller Scraper Types ───
+
+export interface SellerScrapeSession {
+  id: string
+  sellerUrl: string
+  sellerUsername: string
+  siteHostname: string
+  queryFilter?: string
+  status: 'pending' | 'scraping' | 'done' | 'error'
+  totalPages: number
+  scrapedPages: number
+  totalProducts: number
+  errorMessage?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SellerScrapedListing {
+  id: string
+  sessionId: string
+  productUrl: string
+  productIdExt?: string
+  title: string
+  thumbnailUrl?: string
+  price?: string
+  currency: string
+  pageNumber: number
+  selected: boolean
+  groupName?: string
+  deepScraped: boolean
+  deepScrapeData?: ProductData
+  deepScrapeError?: string
+}
+
+// ─── Listing Scraper Types ───
+
+export interface ListingProduct {
+  url: string
+  externalId?: string
+  title: string
+  thumbnailUrl?: string
+  price?: string
+  currency?: string
+}
+
+export interface ListingPageResult {
+  products: ListingProduct[]
+  currentPage: number
+  totalPages: number
+}
+
+// ─── AI Chat (Seller Flow) Types ───
+
+export type AIChatActionType =
+  | 'select'
+  | 'deselect'
+  | 'move_to_group'
+  | 'create_group'
+  | 'assign_eans'
+  | 'set_diff_field'
+  | 'message'
+
+export interface AIChatAction {
+  type: AIChatActionType
+  ids?: string[]
+  groupName?: string
+  assignments?: { listingId: string; ean: string }[]
+  field?: string
+  enabled?: boolean
+  text?: string
+}
+
+export interface AIChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+// ─── Diff Fields Types ───
+
+export interface DiffFieldInfo {
+  field: string       // "title" | "images" | "ean" | "price" | "attr:Kolor" | ...
+  label: string       // "Tytuł" | "Zdjęcia" | "EAN" | "Cena" | "Kolor" | ...
+  isDiff: boolean
+  uniqueValues: string[]
+  totalUnique: number
+  coverage: number    // 0-1
+}

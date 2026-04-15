@@ -311,12 +311,20 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
               <Sparkles className="w-4 h-4 text-amber-500" />
               <p className="text-sm font-semibold text-gray-700">Sugerowane kategorie</p>
             </div>
-            {!suggestionsLoading && suggestions.length === 0 && productData?.title && (
+            {suggestions.length === 0 && productData?.title && (
               <button
                 onClick={loadSuggestions}
-                className="text-xs text-blue-600 hover:text-blue-800 font-medium px-2 py-1 rounded hover:bg-blue-50 transition-colors"
+                disabled={suggestionsLoading}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium px-2 py-1 rounded hover:bg-blue-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1"
               >
-                Załaduj sugestie
+                {suggestionsLoading ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Ładuję...
+                  </>
+                ) : (
+                  'Załaduj sugestie'
+                )}
               </button>
             )}
             {suggestions.length > 0 && (
