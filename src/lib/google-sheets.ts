@@ -59,9 +59,67 @@ async function resolveSheetNameByGid(
 }
 
 /**
+ * Normalize a header string for fuzzy matching:
+ * lowercase, trim, strip diacritics, collapse whitespace.
+ */
+function normalizeHeader(h: string): string {
+  return h
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Map of normalized header names → SheetRowInput field keys.
+ * Supports multiple variations of the same header.
+ */
+const HEADER_FIELD_MAP: Record<string, keyof Omit<SheetRowInput, 'id' | 'rowIndex' | 'extraColumns'>> = {
+  'id': 'id' as never, // special — handled separately
+  'sku': 'sku',
+  'nazwa': 'nazwa',
+  'model': 'model',
+  'ean': 'ean',
+  'rozmiar/gabaryt': 'rozmiarGabaryt',
+  'rozmiar gabaryt': 'rozmiarGabaryt',
+  'rozmiar': 'rozmiarGabaryt',
+  'gabaryt': 'rozmiarGabaryt',
+  'stan techniczny': 'stanTechniczny',
+  'stan': 'stanTechniczny',
+  'opakowanie': 'opakowanie',
+  'czy wiecej kartonow': 'czyWiecejKartonow',
+  'czy wiecej kartonów': 'czyWiecejKartonow',
+  'kolor': 'kolor',
+  'uwagi krotkie': 'uwagiKrotkie',
+  'uwagi': 'uwagiKrotkie',
+  'uwagi magazynowe': 'uwagiMagazynowe',
+  'paleta': 'paleta',
+  'waga': 'waga',
+  'dlugosc': 'dlugosc',
+  'dl': 'dlugosc',
+  'szerokosc': 'szerokosc',
+  'szer': 'szerokosc',
+  'wysokosc': 'wysokosc',
+  'wys': 'wysokosc',
+  'zdjecie': 'zdjecie',
+  'zdjecia': 'zdjecie',
+  'zdjecia wszystkie': 'zdjecie',
+  'zdjęcia': 'zdjecie',
+  'zdjęcia wszystkie': 'zdjecie',
+  'foto': 'zdjecie',
+  'lokalizacja': 'lokalizacja',
+};
+
+/** Headers to always ignore (app-managed columns). */
+const IGNORED_HEADERS = new Set([
+  'status', 'data dodania', 'data dodania do lokalizacji',
+]);
+
+/**
  * Fetch all product rows from the configured Google Sheet.
- * Reads columns A-V starting from row 2 (skips header).
- * Identifies the sheet tab by gid (GOOGLE_SHEETS_SHEET_GID) instead of name.
+ * Dynamically reads headers from row 1 and maps columns accordingly.
+ * Unknown columns are stored in extraColumns.
  */
 export async function fetchAllRows(): Promise<SheetRowInput[]> {
   const auth = getAuth();
@@ -70,7 +128,7 @@ export async function fetchAllRows(): Promise<SheetRowInput[]> {
   const spreadsheetId = getSpreadsheetId();
   const gid = getSheetGid();
   const sheetName = await resolveSheetNameByGid(sheets, spreadsheetId, gid);
-  const range = `'${sheetName}'!A2:V`;
+  const range = `'${sheetName}'!A1:ZZ`;
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -78,14 +136,43 @@ export async function fetchAllRows(): Promise<SheetRowInput[]> {
   });
 
   const rawRows = response.data.values;
-  if (!rawRows || rawRows.length === 0) return [];
+  if (!rawRows || rawRows.length < 2) return [];
 
+  // --- Parse headers from row 1 ---
+  const headerRow = rawRows[0];
+  const columnMapping: { index: number; field: keyof SheetRowInput | null; rawHeader: string }[] = [];
+
+  for (let i = 0; i < headerRow.length; i++) {
+    const raw = String(headerRow[i] ?? '').trim();
+    if (!raw) continue;
+
+    const norm = normalizeHeader(raw);
+
+    if (IGNORED_HEADERS.has(norm)) {
+      columnMapping.push({ index: i, field: null, rawHeader: raw });
+      continue;
+    }
+
+    const mapped = HEADER_FIELD_MAP[norm];
+    if (mapped) {
+      columnMapping.push({ index: i, field: mapped as keyof SheetRowInput, rawHeader: raw });
+    } else {
+      // Unknown column → will go to extraColumns
+      columnMapping.push({ index: i, field: null, rawHeader: raw });
+    }
+  }
+
+  // Find the ID column index (first column mapped to 'id', or column 0)
+  const idMapping = columnMapping.find((m) => m.field === ('id' as never));
+  const idColIndex = idMapping?.index ?? 0;
+
+  // --- Parse data rows ---
   const results: SheetRowInput[] = [];
 
-  for (let index = 0; index < rawRows.length; index++) {
-    const row = rawRows[index];
+  for (let rowIdx = 1; rowIdx < rawRows.length; rowIdx++) {
+    const row = rawRows[rowIdx];
 
-    const cell = (i: number): string | undefined => {
+    const cellAt = (i: number): string | undefined => {
       const v = row[i];
       if (v == null) return undefined;
       const s = String(v).trim();
@@ -96,33 +183,31 @@ export async function fetchAllRows(): Promise<SheetRowInput[]> {
     const hasAnyData = row.some((v: unknown) => v != null && String(v).trim() !== '');
     if (!hasAnyData) continue;
 
-    // Use column A as ID if present, otherwise fall back to row number
-    const id = cell(0) ?? `row-${index + 2}`;
+    const id = cellAt(idColIndex) ?? `row-${rowIdx + 1}`;
 
-    results.push({
+    const entry: SheetRowInput = {
       id,
-      rowIndex: index + 2, // 1-based, +1 for header
-      sku: cell(1),
-      nazwa: cell(2),
-      model: cell(3),
-      ean: cell(4),
-      rozmiarGabaryt: cell(5),
-      stanTechniczny: cell(6),
-      opakowanie: cell(7),
-      czyWiecejKartonow: cell(8),
-      kolor: cell(9),
-      uwagiKrotkie: cell(10),
-      uwagiMagazynowe: cell(11),
-      paleta: cell(12),
-      waga: cell(13),
-      dlugosc: cell(14),
-      szerokosc: cell(15),
-      wysokosc: cell(16),
-      zdjecie: cell(17),
-      // Column S (18) = Status, T (19) = Data Dodania — ignored
-      lokalizacja: cell(20),
-      // Column V (21) = Data Dodania do Lokalizacji — ignored
-    });
+      rowIndex: rowIdx + 1, // 1-based sheet row number
+    };
+
+    const extras: Record<string, string> = {};
+
+    for (const col of columnMapping) {
+      const val = cellAt(col.index);
+      if (!val) continue;
+
+      if (col.field && col.field !== ('id' as never)) {
+        (entry as unknown as Record<string, unknown>)[col.field] = val;
+      } else if (!col.field && !IGNORED_HEADERS.has(normalizeHeader(col.rawHeader))) {
+        extras[col.rawHeader] = val;
+      }
+    }
+
+    if (Object.keys(extras).length > 0) {
+      entry.extraColumns = extras;
+    }
+
+    results.push(entry);
   }
 
   return results;

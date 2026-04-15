@@ -3,13 +3,13 @@
  * Uzytkownik moze go nadpisac w modalu "Prompt AI".
  */
 
-export const DEFAULT_DESCRIPTION_PROMPT = `Jestes ekspertem od tworzenia ofert na Allegro. Na podstawie ponizszych danych produktu wygeneruj strukturalny opis skladajacy sie z sekcji.
+export const DEFAULT_DESCRIPTION_PROMPT = `Jesteś ekspertem od tworzenia ofert na Allegro. Na podstawie poniższych danych produktu wygeneruj profesjonalny, sprzedażowy opis.
 
 ## DANE PRODUKTU
 
-Tytul: {title}
+Tytuł: {title}
 
-Atrybuty przetlumaczone:
+Atrybuty przetłumaczone:
 {attributes}
 
 Kategoria Allegro: {category}
@@ -17,26 +17,54 @@ Kategoria Allegro: {category}
 Parametry Allegro:
 {parameters}
 
-## ZDJECIA ({image_count} sztuk)
+## UWAGI / STAN PRODUKTU
+
+{uwagi}
+
+## ZDJĘCIA ({image_count} sztuk)
 
 {image_descriptions}
 
-## INSTRUKCJE
+## STRUKTURA OPISU
 
-1. Stwórz opis złożony z sekcji. Każda sekcja to para: zdjęcie + tekst opisowy.
-2. Zdjęcie ZAWSZE po lewej stronie, tekst po prawej.
-3. Sam zdecyduj, które zdjęcia z galerii najlepiej pasują do opisu - nie musisz użyć wszystkich.
-4. Zazwyczaj opis ma 4-8 sekcji typu "image-text" (zdjęcie + tekst).
-5. Na końcu możesz dodać 1-2 sekcje "images-only" - dwa zdjęcia obok siebie bez tekstu. Użyj ich dla zdjęć, które nie wymagają opisu tekstowego, ale dobrze prezentują produkt.
-6. Pisz językiem korzyści - pokaż co klient ZYSKUJE.
-7. Każda sekcja powinna opisywać konkretną cechę lub zaletę produktu, dopasowaną do tego co widać na zdjęciu.
-8. Pierwsza sekcja powinna być głównym nagłówkiem sprzedażowym.
-9. Ostatnia sekcja "image-text" powinna zawierać specyfikację techniczną.
-10. Pisz wyłącznie po polsku.
-11. Nie powtarzaj tytułu dosłownie w opisie.
-12. Nie pisz o gwarancji producenta.
-13. Nie używaj emoji.
-14. Styl: ludzki, informacyjny, nastawiony na sprzedaż.
+Opis składa się z sekcji. Każda sekcja to para: zdjęcie po lewej + tekst po prawej.
+Sam zdecyduj, które zdjęcia z galerii najlepiej pasują — nie musisz użyć wszystkich.
+Zazwyczaj opis ma 5-8 sekcji.
+
+### Sekcja 1 — Nagłówek sprzedażowy
+- Mocny, przyciągający nagłówek (np. "KRZESŁO, KTÓRE DOPASOWUJE SIĘ DO TWOJEGO CIAŁA – W KAŻDYM SZCZEGÓLE").
+- Krótki akapit (2-3 zdania) wyjaśniający kluczową wartość produktu — dla kogo jest i co rozwiązuje.
+- WAŻNE: Jeśli w sekcji "UWAGI / STAN PRODUKTU" są informacje o uszkodzeniach, brakach lub stanie technicznym, MUSISZ umieścić je tutaj, w tej pierwszej sekcji, w wyraźny sposób (np. pogrubiony tekst). Klient musi to zobaczyć od razu.
+
+### Sekcja 2 — "DLACZEGO WARTO WYBRAĆ TEN PRODUKT"
+- Lista najważniejszych cech i zalet produktu.
+- Każdy punkt: <strong>Nazwa cechy</strong> – opis korzyści, co klient zyskuje.
+- Bazuj na atrybutach, parametrach i opisach zdjęć.
+- Pisz językiem korzyści — nie suche dane, lecz co to daje użytkownikowi.
+
+### Sekcja 3-6 — Szczegółowe cechy (opcjonalne)
+- Każda sekcja opisuje konkretną cechę lub zaletę dopasowaną do zdjęcia.
+- Jeśli produkt ma wiele cech — rozłóż je na kilka sekcji.
+- Jeśli produkt jest prosty — możesz pominąć te sekcje.
+
+### Sekcja przedostatnia — "WYOBRAŹ SOBIE..." (opcjonalna)
+- Krótka historia użycia (storytelling) — scenariusz z życia, w którym produkt rozwiązuje problem.
+- Pisz w drugiej osobie ("Siedzisz...", "Wracasz do domu...").
+- Użyj tej sekcji tylko gdy produkt się do tego nadaje (meble, elektronika, AGD).
+
+### Sekcja ostatnia — "SPECYFIKACJA TECHNICZNA"
+- Uporządkowana lista parametrów technicznych.
+- Użyj formatu: <strong>Parametr</strong>: wartość.
+- Uwzględnij: markę, model, kolor, wymiary, wagę, certyfikaty i inne istotne dane.
+
+## ZASADY STYLU
+
+1. Pisz wyłącznie po polsku.
+2. Nie powtarzaj tytułu dosłownie w opisie.
+3. Nie pisz o gwarancji producenta.
+4. Nie używaj emoji.
+5. Styl: ludzki, informacyjny, nastawiony na sprzedaż.
+6. Używaj HTML: <strong>, <ul>, <li>, <br> — ale bez <h1>/<h2> (nagłówki idą w polu "heading").
 
 ## FORMAT ODPOWIEDZI
 
@@ -46,19 +74,12 @@ Zwróć TYLKO JSON:
     {
       "imageIndex": 0,
       "heading": "Nagłówek sekcji",
-      "body": "Treść sekcji (możesz użyć <ul><li>, <strong>, <br>)",
+      "body": "Treść sekcji w HTML (<strong>, <ul>, <li>, <br>)",
       "layout": "image-text"
-    },
-    {
-      "imageIndices": [5, 6],
-      "heading": "",
-      "body": "",
-      "layout": "images-only"
     }
   ]
 }
 
-Dla sekcji "image-text" użyj "imageIndex" (pojedynczy indeks).
-Dla sekcji "images-only" użyj "imageIndices" (tablica 2 indeksów).`;
+Dla każdej sekcji użyj "imageIndex" (pojedynczy indeks zdjęcia z galerii).`;
 
 export const DESCRIPTION_PROMPT_STORAGE_KEY = 'ecom-description-prompt';

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect, useCallback } from "react"
-import { Send, Loader2, Bot, User, X, Sparkles, ArrowRight } from "lucide-react"
+import { Send, Loader2, Bot, User, X, Sparkles, ArrowRight, Target } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
@@ -14,21 +14,11 @@ interface Message {
   targetedSections?: TargetableSection[]
 }
 
-interface ChatResult {
-  title?: string
-  description?: string
-}
-
 interface ClaudeChatProps {
   currentTitle: string
-  currentDescription: string
-  currentImages?: string[]
-  onUpdate: (result: ChatResult) => void
   onClose?: () => void
   className?: string
   style?: React.CSSProperties
-  // Nowe propsy dla trybu opisu strukturalnego
-  mode?: "simple" | "description"
   sections?: DescriptionSection[]
   currentParameters?: Record<string, string | string[]>
   imagesMeta?: ImageMeta[]
@@ -37,6 +27,12 @@ interface ClaudeChatProps {
   onParameterChange?: (id: string, value: string | string[]) => void
   onSectionUpdate?: (sectionId: string, heading?: string, bodyHtml?: string) => void
   onSectionImageReorder?: (sectionId: string, imageUrls: string[]) => void
+  onSectionRemove?: (sectionId: string) => void
+  onSectionAdd?: (section: DescriptionSection, afterSectionId?: string) => void
+  onSectionLayoutChange?: (sectionId: string, layout: 'image-text' | 'images-only') => void
+  onSectionsReorder?: (sectionIds: string[]) => void
+  onSectionImageAdd?: (sectionId: string, imageUrl: string) => void
+  onSectionImageRemove?: (sectionId: string, imageUrl: string) => void
   onRegenerateRequest?: () => void
   /** Auto-ask about unfilled parameters on mount */
   autoAskUnfilled?: boolean
@@ -56,18 +52,20 @@ const ACTION_LABELS: Record<string, string> = {
   regenerate_description: "Regeneracja opisu",
   request_scrape: "Scrapowanie strony",
   reorder_section_images: "Zmieniono zdjęcia w sekcji",
+  add_image_to_section: "Dodano zdjęcie do sekcji",
+  remove_image_from_section: "Usunięto zdjęcie z sekcji",
+  remove_section: "Usunięto sekcję",
+  add_section: "Dodano nową sekcję",
+  change_section_layout: "Zmieniono layout sekcji",
+  reorder_sections: "Zmieniono kolejność sekcji",
+  clear_targets: "Wyczyszczono zaznaczenie",
 }
 
 export function ClaudeChat({
   currentTitle,
-  currentDescription,
-  currentImages = [],
-  onUpdate,
   onClose,
   className,
   style,
-  // Nowe
-  mode = "simple",
   sections,
   currentParameters,
   imagesMeta,
@@ -76,6 +74,12 @@ export function ClaudeChat({
   onParameterChange,
   onSectionUpdate,
   onSectionImageReorder,
+  onSectionRemove,
+  onSectionAdd,
+  onSectionLayoutChange,
+  onSectionsReorder,
+  onSectionImageAdd,
+  onSectionImageRemove,
   onRegenerateRequest,
   autoAskUnfilled,
   // productData available via props for future use
@@ -95,7 +99,7 @@ export function ClaudeChat({
   // Auto-ask about unfilled parameters on mount
   const hasAutoAsked = useRef(false)
   useEffect(() => {
-    if (!autoAskUnfilled || hasAutoAsked.current || mode !== "description") return
+    if (!autoAskUnfilled || hasAutoAsked.current) return
     if (!allegroParameters?.length) return
 
     const unfilled = allegroParameters.filter(
@@ -136,9 +140,8 @@ export function ClaudeChat({
     msg += 'Podaj wartość dla każdego parametru, napisz "pomiń" jeśli nie chcesz go uzupełniać, lub wklej link do strony z danymi produktu.'
 
     setMessages([{ role: "assistant", content: msg }])
-  }, [autoAskUnfilled, mode, allegroParameters, currentParameters])
+  }, [autoAskUnfilled, allegroParameters, currentParameters])
 
-  const isDescriptionMode = mode === "description" && sections
 
   const handleScrapeAndFill = useCallback(
     async (url: string) => {
@@ -236,7 +239,6 @@ export function ClaudeChat({
           case "update_title":
             if (action.title) {
               onTitleChange?.(action.title)
-              onUpdate({ title: action.title })
             }
             break
           case "update_parameter":
@@ -263,10 +265,52 @@ export function ClaudeChat({
               onSectionImageReorder?.(action.sectionId, action.imageUrls)
             }
             break
+          case "add_image_to_section":
+            if (action.sectionId && action.imageUrl) {
+              onSectionImageAdd?.(action.sectionId, action.imageUrl)
+            }
+            break
+          case "remove_image_from_section":
+            if (action.sectionId && action.imageUrl) {
+              onSectionImageRemove?.(action.sectionId, action.imageUrl)
+            }
+            break
+          case "remove_section":
+            if (action.sectionId) {
+              onSectionRemove?.(action.sectionId)
+            }
+            break
+          case "add_section":
+            if (action.heading) {
+              onSectionAdd?.(
+                {
+                  id: `section-${crypto.randomUUID().slice(0, 8)}`,
+                  heading: action.heading,
+                  bodyHtml: action.bodyHtml || '',
+                  layout: action.layout || 'image-text',
+                  imageUrls: action.imageUrls || [],
+                },
+                action.afterSectionId,
+              )
+            }
+            break
+          case "change_section_layout":
+            if (action.sectionId && action.layout) {
+              onSectionLayoutChange?.(action.sectionId, action.layout)
+            }
+            break
+          case "reorder_sections":
+            if (action.sectionIds?.length) {
+              onSectionsReorder?.(action.sectionIds)
+            }
+            break
+          case "clear_targets":
+            onClearTargets?.()
+            break
         }
       }
     },
-    [onTitleChange, onParameterChange, onSectionUpdate, onSectionImageReorder, onRegenerateRequest, onUpdate, handleScrapeAndFill],
+    [onTitleChange, onParameterChange, onSectionUpdate, onSectionImageReorder, onSectionRemove, onSectionAdd, onSectionLayoutChange, onSectionsReorder, onSectionImageAdd, onSectionImageRemove, onRegenerateRequest, onClearTargets, handleScrapeAndFill],
   )
 
   const sendMessage = async () => {
@@ -294,9 +338,7 @@ export function ClaudeChat({
     }
 
     try {
-      if (isDescriptionMode) {
-        // Tryb opisu strukturalnego - nowy endpoint
-        const history = messages.map(m => ({ role: m.role, content: m.content }))
+      const history = messages.map(m => ({ role: m.role, content: m.content }))
         const res = await fetch("/api/description-chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -323,29 +365,6 @@ export function ClaudeChat({
         if (actions.length) {
           applyActions(actions)
         }
-      } else {
-        // Tryb prosty - stary endpoint (fallback)
-        const res = await fetch("/api/claude-chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            currentTitle,
-            currentDescription,
-            currentImages,
-          }),
-        })
-
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || "Błąd odpowiedzi")
-
-        const assistantContent = data.message || "Zaktualizowałem dane produktu."
-        setMessages((prev) => [...prev, { role: "assistant", content: assistantContent }])
-
-        if (data.title || data.description) {
-          onUpdate({ title: data.title, description: data.description })
-        }
-      }
     } catch (e: unknown) {
       setMessages((prev) => [
         ...prev,
@@ -356,13 +375,8 @@ export function ClaudeChat({
     }
   }
 
-  const placeholderExamples = isDescriptionMode
-    ? '„Zmień wagę na 6 kg", „Rozwiń opis pod zdjęciem 3", „Zmień tytuł"'
-    : '„Skróć opis", „Dodaj więcej emocji w tytule", „Zmień styl na bardziej formalny"'
-
-  const subtitleText = isDescriptionMode
-    ? "Edytuje opis, parametry, tytuł"
-    : "Edytuje tytuł i opis"
+  const placeholderExamples = '„Zmień wagę na 6 kg", „Rozwiń opis pod zdjęciem 3", „Zmień tytuł"'
+  const subtitleText = "Edytuje opis, parametry, tytuł"
 
   return (
     <div className={cn("flex flex-col bg-card rounded-xl ring-1 ring-foreground/10 overflow-hidden", className)} style={style}>
@@ -450,14 +464,15 @@ export function ClaudeChat({
 
       {/* Targeted sections pills */}
       {targetedSections && targetedSections.length > 0 && (
-        <div className="px-3 pt-2 pb-0 flex flex-wrap gap-1.5 border-t">
-          <span className="text-[10px] text-muted-foreground self-center mr-0.5">Dotyczy:</span>
+        <div className="px-3 py-2 flex flex-wrap items-center gap-1.5 border-t bg-primary/5">
+          <Target className="size-3 text-primary shrink-0" />
+          <span className="text-[10px] text-primary font-medium mr-0.5">Dotyczy:</span>
           {targetedSections.map(s => (
-            <Badge key={s.id} variant="secondary" className="gap-1 text-[10px] pr-1">
+            <Badge key={s.id} variant="secondary" className="gap-1 text-[10px] pr-1 bg-primary/10 text-primary border-primary/20">
               {s.label}
               <button
                 onClick={() => onRemoveTargetedSection?.(s.id)}
-                className="ml-0.5 rounded-full hover:bg-foreground/10 p-0.5"
+                className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5"
               >
                 <X className="size-2.5" />
               </button>

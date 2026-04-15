@@ -6,6 +6,7 @@ import {
   invalidateProductDetails,
   setCachedProductDetails,
 } from '@/lib/product-details-cache';
+import { invalidateProductListCache } from '@/lib/db';
 
 // POST /api/bl-submit — build payload from session and submit to BaseLinker
 export async function POST() {
@@ -23,7 +24,8 @@ export async function POST() {
     const result = await addInventoryProduct(payload);
     const productId = String(result.product_id);
 
-    // Invalidate cache and re-fetch fresh data so the list shows updated info
+    // Invalidate caches so the list shows the new product
+    invalidateProductListCache();
     invalidateProductDetails([productId]);
     try {
       const fresh = await getInventoryProductsData([productId], session.inventoryId) as {

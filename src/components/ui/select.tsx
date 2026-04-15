@@ -165,11 +165,16 @@ function FilterableSelect({
   }, [options, filter])
 
   return (
-    <Select value={value || undefined} onValueChange={onValueChange} disabled={disabled}>
+    <Select
+      value={value === "" ? "__placeholder__" : value}
+      onValueChange={(v) => onValueChange(v === "__placeholder__" ? "" : v)}
+      disabled={disabled}
+    >
       <SelectTrigger className={className}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>
+        <SelectItem value="__placeholder__" className="hidden">{placeholder}</SelectItem>
         {showFilter && (
           <div className="flex items-center gap-2 px-2 pb-1.5 pt-0.5 border-b border-border mb-1 sticky top-0 bg-popover">
             <Search className="size-3.5 text-muted-foreground shrink-0" />

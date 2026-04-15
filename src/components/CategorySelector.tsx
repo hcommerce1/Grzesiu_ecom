@@ -84,7 +84,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
   const suggestionsAbortRef = useRef<AbortController | null>(null);
 
   // --- Tree browser ---
-  const [showTree, setShowTree] = useState(false);
+  const [showTree, setShowTree] = useState(true);
   const [categories, setCategories] = useState<AllegroCategory[]>([]);
   const [path, setPath] = useState<AllegroCategory[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -243,7 +243,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
 
       {/* Search bar — always visible */}
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
         <input
           value={searchQuery}
           onChange={(e) => {
@@ -251,12 +251,12 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
             setError('');
           }}
           placeholder="Wyszukaj kategorię po nazwie (np. odkurzacze pionowe)..."
-          className="w-full bg-white border border-gray-300 rounded-xl pl-10 pr-10 py-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm"
+          className="w-full bg-white border border-gray-300 rounded-xl pl-10 pr-10 py-3 text-sm text-gray-900 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm"
         />
         {searchQuery && (
           <button
             onClick={() => { setSearchQuery(''); setSearchResults([]); }}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-600"
           >
             <X className="w-4 h-4" />
           </button>
@@ -284,7 +284,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
               >
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-gray-900 group-hover:text-blue-700 truncate">{cat.name}</p>
-                  <p className="text-[11px] text-gray-400 truncate mt-0.5">{cat.fullPath}</p>
+                  <p className="text-[11px] text-gray-500 truncate mt-0.5">{cat.fullPath}</p>
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5">
                   <CommissionBadge commission={cat.commission} />
@@ -323,7 +323,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
               <button
                 onClick={loadSuggestions}
                 disabled={suggestionsLoading}
-                className="text-xs text-gray-400 hover:text-gray-600 font-medium px-2 py-1 rounded hover:bg-gray-50 transition-colors disabled:opacity-50"
+                className="text-xs text-gray-500 hover:text-gray-600 font-medium px-2 py-1 rounded hover:bg-gray-50 transition-colors disabled:opacity-50"
               >
                 Odśwież
               </button>
@@ -357,7 +357,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
                 >
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-gray-900 group-hover:text-blue-700 truncate">{cat.name}</p>
-                    <p className="text-[11px] text-gray-400 truncate mt-0.5">{cat.path}</p>
+                    <p className="text-[11px] text-gray-500 truncate mt-0.5">{cat.path}</p>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5">
                     <CommissionBadge commission={cat.commission} />
@@ -369,7 +369,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
           )}
 
           {!suggestionsLoading && suggestions.length === 0 && !suggestionsError && !productData?.title && (
-            <p className="text-xs text-gray-400 italic">
+            <p className="text-xs text-gray-500 italic">
               Sugestie AI dostępne po zescrapowaniu produktu.
             </p>
           )}
@@ -398,7 +398,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
               <FolderTree className="w-4 h-4 text-gray-500" />
               <span className="text-sm font-medium text-gray-700">Przeglądaj drzewo kategorii</span>
             </div>
-            {showTree ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+            {showTree ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
           </button>
 
           {showTree && (
@@ -422,11 +422,11 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
               <div className="p-3">
                 {treeLoading && (
                   <div className="flex items-center justify-center py-6">
-                    <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                    <Loader2 className="w-5 h-5 animate-spin text-gray-500" />
                   </div>
                 )}
                 {!treeLoading && categories.length === 0 && (
-                  <p className="text-sm text-gray-400 text-center py-4">Brak kategorii</p>
+                  <p className="text-sm text-gray-500 text-center py-4">Brak kategorii</p>
                 )}
                 {!treeLoading && categories.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { callBaselinker, getInventories } from '@/lib/baselinker';
+import { getCachedProductList, setCachedProductList } from '@/lib/db';
 import type { BLProductListItem, BLProductType } from '@/lib/types';
 
 interface ProductListPage {
@@ -22,6 +23,18 @@ async function getInventoryId(req: NextRequest): Promise<number> {
 export async function GET(req: NextRequest) {
   try {
     const inventoryId = await getInventoryId(req);
+    const force = req.nextUrl.searchParams.get('force') === 'true';
+
+    // Check cache first (unless force refresh)
+    if (!force) {
+      const cached = getCachedProductList(inventoryId);
+      if (cached) {
+        return NextResponse.json(
+          { products: cached.products, totalCount: cached.products.length, inventoryId, cachedAt: cached.cachedAt },
+          { headers: { 'X-Cache': 'HIT' } }
+        );
+      }
+    }
 
     const items: BLProductListItem[] = [];
     let page = 1;
@@ -93,11 +106,14 @@ export async function GET(req: NextRequest) {
       page++;
     }
 
-    return NextResponse.json({
-      products: items,
-      totalCount: items.length,
-      inventoryId,
-    });
+    // Save to cache
+    setCachedProductList(inventoryId, items);
+    const cachedAt = new Date().toISOString();
+
+    return NextResponse.json(
+      { products: items, totalCount: items.length, inventoryId, cachedAt },
+      { headers: { 'X-Cache': 'MISS' } }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 500 });

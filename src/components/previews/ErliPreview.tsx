@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { DESCRIPTION_PREVIEW_CSS } from "@/lib/description-utils"
 
 interface Props {
   title: string
@@ -105,7 +106,7 @@ export function ErliPreview({ title, fullHtml, images, price }: Props) {
       {fullHtml && (
         <div style={{ padding: '24px', borderTop: '1px solid #e5e7eb', maxWidth: 1100, margin: '0 auto' }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Opis</div>
-          <div dangerouslySetInnerHTML={{ __html: fullHtml }} />
+          <div dangerouslySetInnerHTML={{ __html: DESCRIPTION_PREVIEW_CSS + fullHtml }} />
         </div>
       )}
     </div>

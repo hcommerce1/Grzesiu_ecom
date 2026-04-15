@@ -27,9 +27,9 @@ export const extractWoltu: SiteExtractor = async (page, url) => {
             ?.ecommerce?.detail?.products?.[0];
 
         function extractTitle(): string {
-            if (gtmProduct?.name) return gtmProduct.name;
+            if (gtmProduct?.name) return gtmProduct.name.replace(/\s*\n\s*/g, ' ').trim();
             const h1 = document.querySelector('h1');
-            return h1?.textContent?.trim() || 'Untitled Product';
+            return h1?.textContent?.trim()?.replace(/\s*\n\s*/g, ' ') || 'Untitled Product';
         }
 
         function extractImages(): string[] {
@@ -85,6 +85,39 @@ export const extractWoltu: SiteExtractor = async (page, url) => {
                 }
             }
 
+            // Woltu: li.entry--sku with <strong>Key:</strong><span>Value</span>
+            document.querySelectorAll('li.entry--sku').forEach((li) => {
+                const strong = li.querySelector('strong');
+                const span = li.querySelector('span');
+                if (strong && span) {
+                    addAttr(strong.textContent || '', span.textContent || '');
+                }
+            });
+
+            // Woltu: <ul> with key:value li items (specs like "Material: Velvet", "Total height: 81cm")
+            const allUls = document.querySelectorAll('ul');
+            for (const ul of Array.from(allUls)) {
+                const lis = ul.querySelectorAll('li');
+                let kvCount = 0;
+                const tmpAttrs: Record<string, string> = {};
+                lis.forEach((li) => {
+                    const t = li.textContent?.trim() || '';
+                    const sep = t.match(/^(.+?)\s*:\s*(.+)$/);
+                    if (sep) {
+                        const k = sep[1].trim();
+                        const v = sep[2].trim();
+                        // Skip feature descriptions (long keys) — only keep short spec keys
+                        if (k.length < 50 && v.length < 200 && k !== v) {
+                            tmpAttrs[k] = v;
+                            kvCount++;
+                        }
+                    }
+                });
+                if (kvCount >= 3) {
+                    Object.assign(attrs, tmpAttrs);
+                }
+            }
+
             // Shopware uses <dl> <dt>/<dd> for specs
             document.querySelectorAll('dl').forEach((dl) => {
                 const dts = dl.querySelectorAll('dt');
@@ -105,23 +138,36 @@ export const extractWoltu: SiteExtractor = async (page, url) => {
             });
 
             // GTM data
-            if (gtmProduct?.brand) addAttr('Marke', gtmProduct.brand);
-            if (gtmProduct?.category) addAttr('Kategorie', gtmProduct.category);
+            if (gtmProduct?.brand) addAttr('Brand', gtmProduct.brand);
+            if (gtmProduct?.category) addAttr('Category', gtmProduct.category);
+
+            // Remove fields stored separately
+            const removeKeys = ['Order number', 'Bestellnummer', 'Artikelnummer', 'EAN', 'ean'];
+            for (const k of removeKeys) delete attrs[k];
 
             return attrs;
         }
 
         function extractPrice(): { price: string; currency: string } {
             if (gtmProduct?.price) {
-                return { price: `€${gtmProduct.price}`, currency: 'EUR' };
+                return { price: gtmProduct.price, currency: 'EUR' };
             }
 
-            const priceEl = document.querySelector('.product-detail-price, [class*="price"] [class*="current"], [itemprop="price"]');
+            // meta[itemprop="price"] has value in content attribute
+            const metaPrice = document.querySelector('meta[itemprop="price"]');
+            if (metaPrice?.getAttribute('content')) {
+                return { price: metaPrice.getAttribute('content')!, currency: 'EUR' };
+            }
+
+            // Shopware 5: .product--price.price--default, Shopware 6: .product-detail-price
+            const priceEl = document.querySelector('.product--price.price--default, .product-detail-price, [class*="price"] [class*="current"]');
             if (priceEl?.textContent?.trim()) {
                 const text = priceEl.textContent.trim();
-                const match = text.match(/(€)\s*([\d.,]+)/);
-                if (match) return { price: `€${match[2]}`, currency: 'EUR' };
-                return { price: text, currency: 'EUR' };
+                const match = text.match(/€\s*([\d.,]+)/);
+                if (match) return { price: match[1], currency: 'EUR' };
+                const match2 = text.match(/([\d.,]+)\s*€/);
+                if (match2) return { price: match2[1], currency: 'EUR' };
+                return { price: text.replace(/[^\d.,]/g, ''), currency: 'EUR' };
             }
 
             return { price: '', currency: '' };

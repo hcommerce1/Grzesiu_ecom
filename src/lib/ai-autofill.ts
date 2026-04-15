@@ -144,10 +144,12 @@ export function buildAutoFillPrompt(
 
 ## ZASADY BEZWZGLĘDNE
 1. NIGDY nie wymyślaj wartości. Każda wartość MUSI pochodzić z danych produktu podanych poniżej.
-2. Dla parametrów typu dictionary — zwracaj WYŁĄCZNIE ID z listy dozwolonych wartości. Żadnych innych.
-3. Jeśli nie znajdziesz wartości w danych — zwróć null. Lepiej zwrócić null niż zgadywać.
+2. Dla parametrów typu dictionary — zwracaj WYŁĄCZNIE ID z listy dozwolonych wartości (np. "225088"). Możesz też zwrócić nazwę opcji (np. "Nowy") — system ją dopasuje.
+3. POMIJAJ parametry, dla których nie znaleziono wartości. NIE zwracaj ich wcale (ani z null, ani z pustą wartością).
 4. W polu "source" podaj DOKŁADNIE skąd wzięta wartość (np. "attributes.Kolor = Czarny").
-5. Confidence: 1.0 = pewne dopasowanie, 0.8 = bardzo prawdopodobne, 0.6 = niepewne. Poniżej 0.5 = zwróć null.
+5. Confidence: skala 0.0-1.0 (NIE 0-100). 1.0 = pewne, 0.8 = prawdopodobne, 0.6 = niepewne.
+6. Dopasowuj parametr do NAJBLIŻSZEGO atrybutu — np. "Materiał stelaża" szukaj w atrybucie "Materiał", NIE w "Składany".
+7. Dla parametru "Stan" — jeśli produkt jest nowy/używany, dopasuj odpowiednią opcję z dictionary.
 
 ## DANE PRODUKTU
 
@@ -168,18 +170,20 @@ ${finalParamText}
 
 ## FORMAT ODPOWIEDZI
 
-Zwróć tablicę JSON. Dla każdego parametru, który udało się dopasować:
-[
-  {
-    "parameterId": "id_parametru",
-    "value": "id_opcji_lub_wartość",
-    "confidence": 0.95,
-    "source": "dokładne źródło w danych produktu"
-  }
-]
+Zwróć obiekt JSON z kluczem "results" zawierającym tablicę. TYLKO parametry, które udało się dopasować:
+{
+  "results": [
+    {
+      "parameterId": "id_parametru",
+      "value": "id_opcji_lub_nazwa_opcji_lub_wartość",
+      "confidence": 0.95,
+      "source": "dokładne źródło w danych produktu"
+    }
+  ]
+}
 
-Jeśli parametr ma multipleChoices=TAK, "value" może być tablicą ID: ["id1", "id2"].
-NIE uwzględniaj parametrów, dla których nie znaleziono wartości. Zwróć pustą tablicę [] jeśli nic nie pasuje.`;
+Jeśli parametr ma multipleChoices=TAK, "value" może być tablicą: ["id1", "id2"].
+Jeśli nic nie pasuje, zwróć: { "results": [] }`;
 
   return { systemPrompt, parameterIds: finalIds };
 }
@@ -212,10 +216,16 @@ export function validateAutoFillResponse(
     const entry = raw as Record<string, unknown>;
 
     const parameterId = String(entry.parameterId ?? '');
-    const confidence = Number(entry.confidence ?? 0);
+    let confidence = Number(entry.confidence ?? 0);
+    // Normalize confidence: some LLMs return 0-100 instead of 0-1
+    if (confidence > 1) confidence = confidence / 100;
     const source = String(entry.source ?? '');
 
     if (!parameterId || confidence < 0.5) continue;
+
+    // Skip entries with null/empty values
+    const rawValue = entry.value;
+    if (rawValue === null || rawValue === undefined || rawValue === 'null' || rawValue === '') continue;
 
     const param = paramMap.get(parameterId);
     if (!param) continue;
@@ -227,9 +237,18 @@ export function validateAutoFillResponse(
     // Validate based on type
     if (param.type === 'dictionary' || opts.length > 0) {
       const optIds = new Set(opts.map((o) => o.id));
+      // Build name→id lookup for fallback matching (AI may return option name instead of ID)
+      const optByName = new Map(opts.map((o) => [normalizePolish(o.value), o.id]));
 
       if (param.restrictions?.multipleChoices && Array.isArray(entry.value)) {
-        const validIds = (entry.value as string[]).filter((id) => optIds.has(String(id)));
+        const validIds = (entry.value as string[]).map((v) => {
+          const s = String(v);
+          if (optIds.has(s)) return s;
+          // Fallback: match by option name
+          const byName = optByName.get(normalizePolish(s));
+          if (byName) return byName;
+          return null;
+        }).filter((id): id is string => id !== null);
         if (validIds.length > 0) {
           filled[parameterId] = validIds;
           details.push({ parameterId, value: validIds, confidence, source });
@@ -239,6 +258,13 @@ export function validateAutoFillResponse(
         if (optIds.has(val)) {
           filled[parameterId] = val;
           details.push({ parameterId, value: val, confidence, source });
+        } else {
+          // Fallback: AI returned option name instead of ID
+          const byName = optByName.get(normalizePolish(val));
+          if (byName) {
+            filled[parameterId] = byName;
+            details.push({ parameterId, value: byName, confidence, source });
+          }
         }
       }
       continue;
@@ -299,6 +325,8 @@ export function validateAutoFillResponse(
   const allUnfilledIds = parameters
     .filter((p) => !filled[p.id])
     .map((p) => p.id);
+
+  console.log(`[AI auto-fill validate] ${details.length} accepted, ${rawEntries.length - details.length} rejected, ${allUnfilledIds.length} unfilled`);
 
   return { filled, details, unfilled: allUnfilledIds };
 }

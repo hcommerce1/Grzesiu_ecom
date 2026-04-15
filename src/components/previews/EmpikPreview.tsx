@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { DESCRIPTION_PREVIEW_CSS } from "@/lib/description-utils"
 
 interface Props {
   title: string
@@ -105,7 +106,7 @@ export function EmpikPreview({ title, fullHtml, images, price }: Props) {
       {fullHtml && (
         <div style={{ padding: '24px', borderTop: '1px solid #eee', maxWidth: 1100, margin: '0 auto' }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Opis produktu</div>
-          <div dangerouslySetInnerHTML={{ __html: fullHtml }} />
+          <div dangerouslySetInnerHTML={{ __html: DESCRIPTION_PREVIEW_CSS + fullHtml }} />
         </div>
       )}
     </div>

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   RefreshCw,
+  RotateCcw,
   Loader2,
   ChevronDown,
   ChevronRight,
@@ -15,13 +16,40 @@ import {
   XCircle,
   Edit3,
   Package,
+  Play,
+  X,
+  Filter,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { PaginationControls } from "@/components/ui/pagination";
 import { BaselinkerWorkflowPanel } from "@/components/BaselinkerWorkflowPanel";
 import { cn } from "@/lib/utils";
 import type { SheetProductRow } from "@/lib/db";
 import type { ProductData, SheetMeta } from "@/lib/types";
+
+// ─── Image helpers ───
+
+function firstImageUrl(zdjecie: string | null | undefined): string | null {
+  if (!zdjecie) return null;
+  // Support comma-separated, semicolon-separated, or newline-separated URLs
+  const first = zdjecie.split(/[,;\n]/)[0].trim();
+  return first.startsWith("http") ? first : null;
+}
+
+function Thumbnail({ src }: { src: string | null }) {
+  const [errored, setErrored] = useState(false);
+  if (!src || errored) return <span className="text-muted-foreground/40 text-xs">—</span>;
+  return (
+    <img
+      src={src}
+      alt=""
+      className="size-8 object-cover rounded border border-border"
+      loading="lazy"
+      onError={() => setErrored(true)}
+    />
+  );
+}
 
 // ─── Status helpers ───
 
@@ -90,6 +118,7 @@ interface SheetsBatchState {
   currentProductData: ProductData | null;
   currentSheetMeta: SheetMeta | null;
   currentId: string | null;
+  translationFailed?: boolean;
 }
 
 export function GoogleSheetsTab() {
@@ -105,6 +134,24 @@ export function GoogleSheetsTab() {
   const [batch, setBatch] = useState<SheetsBatchState | null>(null);
   const abortRef = useRef(false);
 
+  // Pagination state
+  const [activePage, setActivePage] = useState(1);
+  const [activePerPage, setActivePerPage] = useState(25);
+  const [donePage, setDonePage] = useState(1);
+  const [donePerPage, setDonePerPage] = useState(25);
+
+  // Status filter
+  type StatusFilter = "all" | "ready" | "no_url" | "error" | "in_progress";
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  // Missing URL dialog
+  const [missingUrlProducts, setMissingUrlProducts] = useState<SheetProductRow[]>([]);
+  const [showMissingUrlDialog, setShowMissingUrlDialog] = useState(false);
+  const [missingUrlDrafts, setMissingUrlDrafts] = useState<Record<string, string>>({});
+
+  // Reset confirmation dialog
+  const [showResetDialog, setShowResetDialog] = useState(false);
+
   // ─── Data fetching ───
 
   const [syncing, setSyncing] = useState(false);
@@ -112,6 +159,8 @@ export function GoogleSheetsTab() {
   const applyData = useCallback((data: { active?: SheetProductRow[]; done?: SheetProductRow[] }) => {
     setActive(data.active ?? []);
     setDone(data.done ?? []);
+    setActivePage(1);
+    setDonePage(1);
 
     const drafts: Record<string, string> = {};
     for (const p of [...(data.active ?? []), ...(data.done ?? [])]) {
@@ -174,7 +223,11 @@ export function GoogleSheetsTab() {
 
   function selectAll() {
     const selectableIds = active
-      .filter((p) => p.status === "new" || p.status === "error")
+      .filter((p) => {
+        if (p.status !== "new" && p.status !== "error") return false;
+        const url = urlDrafts[p.id] ?? p.scrape_url;
+        return url && url.trim().length > 0;
+      })
       .map((p) => p.id);
     setSelected(new Set(selectableIds));
   }
@@ -199,7 +252,7 @@ export function GoogleSheetsTab() {
 
   // ─── Batch start ───
 
-  async function startBatch() {
+  async function startBatch(forceSkipMissing = false) {
     const queue = Array.from(selected).filter((id) => {
       const product = active.find((p) => p.id === id);
       if (!product) return false;
@@ -207,18 +260,21 @@ export function GoogleSheetsTab() {
       return url && url.trim().length > 0;
     });
 
-    if (queue.length === 0) {
-      setError("Zaznacz produkty z wklejonymi URL-ami.");
+    // Check for products without URLs
+    const noUrl = Array.from(selected).filter((id) => !queue.includes(id));
+    if (noUrl.length > 0 && !forceSkipMissing) {
+      const products = noUrl
+        .map((id) => active.find((p) => p.id === id))
+        .filter((p): p is SheetProductRow => p != null);
+      setMissingUrlProducts(products);
+      setMissingUrlDrafts({});
+      setShowMissingUrlDialog(true);
       return;
     }
 
-    // Check for products without URLs
-    const noUrl = Array.from(selected).filter((id) => !queue.includes(id));
-    if (noUrl.length > 0) {
-      const names = noUrl
-        .map((id) => active.find((p) => p.id === id)?.nazwa ?? id)
-        .join(", ");
-      setError(`Pominięto produkty bez URL: ${names}`);
+    if (queue.length === 0) {
+      setError("Zaznacz produkty z wklejonymi URL-ami.");
+      return;
     }
 
     // Mark all as queued
@@ -232,8 +288,27 @@ export function GoogleSheetsTab() {
 
     abortRef.current = false;
     setSelected(new Set());
+    setShowMissingUrlDialog(false);
     setBatch({ queue, currentIndex: 0, currentProductData: null, currentSheetMeta: null, currentId: null });
     processBatchItem(queue, 0);
+  }
+
+  async function handleMissingUrlSave() {
+    // Save URLs from the missing dialog, then re-run startBatch
+    for (const [id, url] of Object.entries(missingUrlDrafts)) {
+      if (url.trim()) {
+        setUrlDrafts((prev) => ({ ...prev, [id]: url }));
+        await saveUrl(id, url);
+      }
+    }
+    setShowMissingUrlDialog(false);
+    // Re-trigger with updated drafts — use setTimeout to let state settle
+    setTimeout(() => startBatch(false), 50);
+  }
+
+  function handleMissingUrlSkip() {
+    setShowMissingUrlDialog(false);
+    startBatch(true);
   }
 
   // ─── Process single batch item ───
@@ -288,6 +363,7 @@ export function GoogleSheetsTab() {
               ...prev,
               currentProductData: data.data as ProductData,
               currentSheetMeta: data.sheetMeta as SheetMeta,
+              translationFailed: data.translationFailed ?? false,
             }
           : null
       );
@@ -303,8 +379,19 @@ export function GoogleSheetsTab() {
   // ─── Workflow callbacks ───
 
   function handleWorkflowClose() {
-    // User closed workflow — keep status as in_progress, move to next
     if (batch) {
+      const remaining = batch.queue.length - batch.currentIndex - 1;
+      if (remaining > 0) {
+        const confirmed = window.confirm(
+          `Produkt pozostanie w statusie "w trakcie" i będzie można go kontynuować.\n\nPrzejść do następnego produktu? (Pozostało: ${remaining})`
+        );
+        if (!confirmed) {
+          // Cancel entire batch, user stays on list view
+          setBatch(null);
+          fetchCached();
+          return;
+        }
+      }
       processBatchItem(batch.queue, batch.currentIndex + 1);
     }
   }
@@ -345,6 +432,175 @@ export function GoogleSheetsTab() {
     (p) => p.status === "in_progress" || p.status === "scraping"
   );
 
+  async function resumeInProgress() {
+    const ids = inProgressProducts.map((p) => p.id);
+    if (ids.length === 0) return;
+
+    for (const id of ids) {
+      await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "queued" }),
+      });
+    }
+    setActive((prev) => prev.map((p) => (ids.includes(p.id) ? { ...p, status: "queued" as const } : p)));
+
+    abortRef.current = false;
+    setSelected(new Set());
+    setBatch({ queue: ids, currentIndex: 0, currentProductData: null, currentSheetMeta: null, currentId: null });
+    processBatchItem(ids, 0);
+  }
+
+  // ─── Retry error product ───
+
+  async function retryProduct(id: string) {
+    await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "new", error_message: null }),
+    });
+    setActive((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, status: "new" as const, error_message: null } : p))
+    );
+  }
+
+  // ─── Reset all ───
+
+  async function confirmResetAll() {
+    try {
+      const res = await fetch('/api/sheets/products/reset', { method: 'POST' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      applyData(data);
+      setSelected(new Set());
+      setBatch(null);
+      setUrlDrafts({});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Błąd resetu');
+    } finally {
+      setShowResetDialog(false);
+    }
+  }
+
+  // ─── Reset single product ───
+
+  async function resetSingleProduct(id: string) {
+    try {
+      const res = await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      const updated = data.product as SheetProductRow;
+      // Move from done back to active if it was done
+      setDone((prev) => prev.filter((p) => p.id !== id));
+      setActive((prev) => {
+        const exists = prev.some((p) => p.id === id);
+        if (exists) {
+          return prev.map((p) => (p.id === id ? updated : p));
+        }
+        return [...prev, updated];
+      });
+      setUrlDrafts((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Błąd resetu produktu');
+    }
+  }
+
+  // ─── Launch single product ───
+
+  async function launchSingle(id: string) {
+    const product = active.find((p) => p.id === id);
+    if (!product) return;
+
+    const url = urlDrafts[id] ?? product.scrape_url;
+    if (!url?.trim()) {
+      setError("Wklej URL producenta przed wystawieniem.");
+      return;
+    }
+
+    if (url !== product.scrape_url) {
+      await saveUrl(id, url);
+    }
+
+    await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "queued" }),
+    });
+    setActive((prev) => prev.map((p) => (p.id === id ? { ...p, status: "queued" as const } : p)));
+
+    abortRef.current = false;
+    setSelected(new Set());
+    setBatch({ queue: [id], currentIndex: 0, currentProductData: null, currentSheetMeta: null, currentId: null });
+    processBatchItem([id], 0);
+  }
+
+  // ─── Resume single in-progress product ───
+
+  async function resumeSingle(id: string) {
+    await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "queued" }),
+    });
+    setActive((prev) => prev.map((p) => (p.id === id ? { ...p, status: "queued" as const } : p)));
+
+    abortRef.current = false;
+    setBatch({ queue: [id], currentIndex: 0, currentProductData: null, currentSheetMeta: null, currentId: null });
+    processBatchItem([id], 0);
+  }
+
+  // ─── URL helpers ───
+
+  function hasUrl(p: SheetProductRow): boolean {
+    const url = urlDrafts[p.id] ?? p.scrape_url;
+    return !!(url && url.trim().length > 0);
+  }
+
+  function isValidUrl(val: string): boolean {
+    if (!val.trim()) return true; // empty is ok (not filled yet)
+    try { new URL(val); return true; } catch { return false; }
+  }
+
+  // ─── Status counts ───
+
+  const counts = {
+    total: active.length,
+    ready: active.filter((p) => (p.status === "new" || p.status === "error") && hasUrl(p)).length,
+    noUrl: active.filter((p) => (p.status === "new") && !hasUrl(p)).length,
+    error: active.filter((p) => p.status === "error").length,
+    inProgress: active.filter((p) => p.status === "in_progress" || p.status === "scraping" || p.status === "queued").length,
+  };
+
+  // ─── Filtered + paginated ───
+
+  const filteredActive = active.filter((p) => {
+    switch (statusFilter) {
+      case "ready": return (p.status === "new" || p.status === "error") && hasUrl(p);
+      case "no_url": return p.status === "new" && !hasUrl(p);
+      case "error": return p.status === "error";
+      case "in_progress": return p.status === "in_progress" || p.status === "scraping" || p.status === "queued";
+      default: return true;
+    }
+  });
+
+  const activeTotalPages = Math.max(1, Math.ceil(filteredActive.length / activePerPage));
+  const safeActivePage = Math.min(activePage, activeTotalPages);
+  const paginatedActive = filteredActive.slice(
+    (safeActivePage - 1) * activePerPage,
+    safeActivePage * activePerPage
+  );
+
+  const doneTotalPages = Math.max(1, Math.ceil(done.length / donePerPage));
+  const safeDonePage = Math.min(donePage, doneTotalPages);
+  const paginatedDone = done.slice(
+    (safeDonePage - 1) * donePerPage,
+    safeDonePage * donePerPage
+  );
+
   // ─── Render ───
 
   if (batch && batch.currentProductData && batch.currentId) {
@@ -381,6 +637,14 @@ export function GoogleSheetsTab() {
             style={{ width: `${((batch.currentIndex + 1) / batch.queue.length) * 100}%` }}
           />
         </div>
+
+        {/* Translation warning */}
+        {batch.translationFailed && (
+          <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 px-4 py-2.5 rounded-lg">
+            <AlertCircle className="size-4 shrink-0" />
+            Tłumaczenie nie powiodło się — dane mogą być w oryginalnym języku. Sprawdź tytuł i opis.
+          </div>
+        )}
 
         {/* Workflow panel */}
         <BaselinkerWorkflowPanel
@@ -422,16 +686,28 @@ export function GoogleSheetsTab() {
             Zaznacz produkty, wklej linki i wystaw na Allegro przez BaseLinker.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={syncFromSheets}
-          disabled={loading || syncing}
-          className="gap-1.5"
-        >
-          <RefreshCw className={cn("size-3.5", (loading || syncing) && "animate-spin")} />
-          {syncing ? "Synchronizuję..." : "Odśwież"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowResetDialog(true)}
+            disabled={loading || syncing || !!batch}
+            className="gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+          >
+            <RotateCcw className="size-3.5" />
+            Zacznij od nowa
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={syncFromSheets}
+            disabled={loading || syncing}
+            className="gap-1.5"
+          >
+            <RefreshCw className={cn("size-3.5", (loading || syncing) && "animate-spin")} />
+            {syncing ? "Synchronizuję..." : "Odśwież"}
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -446,36 +722,74 @@ export function GoogleSheetsTab() {
 
       {/* In-progress resume banner */}
       {inProgressProducts.length > 0 && !batch && (
-        <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-blue-200 bg-blue-50">
-          <Zap className="size-4 text-blue-600" />
-          <span className="text-sm text-blue-700">
-            <strong>{inProgressProducts.length}</strong> produkt(ów) w trakcie wystawiania
-          </span>
+        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-lg border border-blue-200 bg-blue-50">
+          <div className="flex items-center gap-3">
+            <Zap className="size-4 text-blue-600" />
+            <span className="text-sm text-blue-700">
+              <strong>{inProgressProducts.length}</strong> produkt(ów) w trakcie wystawiania
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={resumeInProgress}
+            className="gap-1.5 text-xs border-blue-300 text-blue-700 hover:bg-blue-100"
+          >
+            <Zap className="size-3.5" />
+            Kontynuuj
+          </Button>
         </div>
       )}
 
-      {/* Selection toolbar */}
+      {/* Status filter bar + counters */}
       {active.length > 0 && (
-        <div className="flex items-center justify-between px-1">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={selected.size > 0 ? deselectAll : selectAll}
-              className="text-xs text-primary hover:underline"
-            >
-              {selected.size > 0 ? "Odznacz wszystko" : "Zaznacz wszystko"}
-            </button>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Filter className="size-3.5 text-muted-foreground" />
+            {([
+              ["all", `Wszystkie (${counts.total})`],
+              ["ready", `Gotowe (${counts.ready})`],
+              ["no_url", `Bez URL (${counts.noUrl})`],
+              ["error", `Błędy (${counts.error})`],
+              ["in_progress", `W trakcie (${counts.inProgress})`],
+            ] as [StatusFilter, string][]).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => { setStatusFilter(key); setActivePage(1); }}
+                className={cn(
+                  "px-2.5 py-1 rounded-full text-xs font-medium border transition-colors",
+                  statusFilter === key
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background text-muted-foreground border-border hover:border-primary/50"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Selection toolbar */}
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={selected.size > 0 ? deselectAll : selectAll}
+                className="text-xs text-primary hover:underline"
+              >
+                {selected.size > 0 ? "Odznacz wszystko" : "Zaznacz gotowe"}
+              </button>
+              {selected.size > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  Zaznaczono: <strong>{selected.size}</strong>
+                </span>
+              )}
+            </div>
             {selected.size > 0 && (
-              <span className="text-xs text-muted-foreground">
-                Zaznaczono: <strong>{selected.size}</strong>
-              </span>
+              <Button size="sm" onClick={() => startBatch()} className="gap-1.5">
+                <ExternalLink className="size-3.5" />
+                Wystaw zaznaczone ({selected.size})
+              </Button>
             )}
           </div>
-          {selected.size > 0 && (
-            <Button size="sm" onClick={startBatch} className="gap-1.5">
-              <ExternalLink className="size-3.5" />
-              Wystaw zaznaczone ({selected.size})
-            </Button>
-          )}
         </div>
       )}
 
@@ -491,7 +805,7 @@ export function GoogleSheetsTab() {
       {!loading && active.length === 0 && done.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <div className="size-16 rounded-2xl bg-muted border border-border flex items-center justify-center mb-4">
-            <Package className="size-8 text-muted-foreground/40" />
+            <Package className="size-8 text-muted-foreground/60" />
           </div>
           <p className="text-sm text-muted-foreground">
             Brak produktów w arkuszu. Dodaj dane do Google Sheets i kliknij <strong>Odśwież</strong>.
@@ -514,6 +828,9 @@ export function GoogleSheetsTab() {
                       className="rounded border-border"
                     />
                   </th>
+                  <th className="w-12 px-2 py-2.5 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Foto
+                  </th>
                   <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     ID
                   </th>
@@ -535,10 +852,13 @@ export function GoogleSheetsTab() {
                   <th className="px-3 py-2.5 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Status
                   </th>
+                  <th className="px-3 py-2.5 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider w-28">
+                    Akcja
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {active.map((product) => {
+                {paginatedActive.map((product) => {
                   const isSelectable =
                     product.status === "new" || product.status === "error";
                   const isSelected = selected.has(product.id);
@@ -561,8 +881,11 @@ export function GoogleSheetsTab() {
                             className="rounded border-border"
                           />
                         ) : (
-                          <span className="text-muted-foreground/30">—</span>
+                          <span className="text-muted-foreground/50">—</span>
                         )}
+                      </td>
+                      <td className="px-2 py-1 text-center">
+                        <Thumbnail src={firstImageUrl(product.zdjecie)} />
                       </td>
                       <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                         {product.id}
@@ -578,23 +901,93 @@ export function GoogleSheetsTab() {
                       </td>
                       <td className="px-3 py-2 text-xs">{product.stan_techniczny || "—"}</td>
                       <td className="px-3 py-2">
-                        <input
-                          type="url"
-                          value={urlDrafts[product.id] ?? product.scrape_url ?? ""}
-                          onChange={(e) =>
-                            setUrlDrafts((prev) => ({
-                              ...prev,
-                              [product.id]: e.target.value,
-                            }))
-                          }
-                          onBlur={(e) => saveUrl(product.id, e.target.value)}
-                          placeholder="https://..."
-                          className="w-full bg-background border border-border rounded-md px-2.5 py-1.5 text-xs placeholder:text-muted focus:outline-none focus:border-primary"
-                          disabled={!isSelectable}
-                        />
+                        {(() => {
+                          const val = urlDrafts[product.id] ?? product.scrape_url ?? "";
+                          const valid = isValidUrl(val);
+                          return (
+                            <input
+                              type="url"
+                              value={val}
+                              onChange={(e) =>
+                                setUrlDrafts((prev) => ({
+                                  ...prev,
+                                  [product.id]: e.target.value,
+                                }))
+                              }
+                              onBlur={(e) => saveUrl(product.id, e.target.value)}
+                              placeholder="https://..."
+                              className={cn(
+                                "w-full bg-background border rounded-md px-2.5 py-1.5 text-xs placeholder:text-muted focus:outline-none focus:border-primary",
+                                !valid ? "border-red-400 bg-red-50/50" : "border-border"
+                              )}
+                            />
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2 text-center">
-                        <StatusBadge product={product} />
+                        <div className="flex flex-col items-center gap-1">
+                          <StatusBadge product={product} />
+                          {product.status === "error" && product.error_message && (
+                            <div className="flex items-center gap-1 max-w-[180px]">
+                              <span className="text-[10px] text-red-600 truncate" title={product.error_message}>
+                                {product.error_message}
+                              </span>
+                              <button
+                                onClick={() => retryProduct(product.id)}
+                                className="shrink-0 p-0.5 rounded hover:bg-red-100 text-red-400 hover:text-red-600"
+                                title="Wyczyść błąd"
+                              >
+                                <X className="size-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        {product.status === "new" && hasUrl(product) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => launchSingle(product.id)}
+                            className="h-6 px-2 text-[10px] gap-1"
+                          >
+                            <Play className="size-3" />
+                            Wystaw
+                          </Button>
+                        )}
+                        {product.status === "error" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => hasUrl(product) ? launchSingle(product.id) : retryProduct(product.id)}
+                            className="h-6 px-2 text-[10px] gap-1 text-orange-600 border-orange-200 hover:bg-orange-50"
+                          >
+                            <RefreshCw className="size-3" />
+                            Ponów
+                          </Button>
+                        )}
+                        {product.status === "in_progress" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => resumeSingle(product.id)}
+                            className="h-6 px-2 text-[10px] gap-1 text-blue-600 border-blue-200 hover:bg-blue-50"
+                          >
+                            <Zap className="size-3" />
+                            Kontynuuj
+                          </Button>
+                        )}
+                        {product.status !== "new" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => resetSingleProduct(product.id)}
+                            className="h-6 px-1.5 text-[10px] gap-1 text-muted-foreground hover:text-destructive"
+                            title="Resetuj produkt"
+                          >
+                            <RotateCcw className="size-3" />
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -602,6 +995,18 @@ export function GoogleSheetsTab() {
               </tbody>
             </table>
           </div>
+          {filteredActive.length > activePerPage && (
+            <div className="border-t border-border px-4 py-2">
+              <PaginationControls
+                currentPage={safeActivePage}
+                totalPages={activeTotalPages}
+                itemsPerPage={activePerPage}
+                onPageChange={setActivePage}
+                onItemsPerPageChange={(n) => { setActivePerPage(n); setActivePage(1); }}
+                totalItems={filteredActive.length}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -624,8 +1029,11 @@ export function GoogleSheetsTab() {
             <div className="border-t">
               <table className="w-full text-sm">
                 <tbody>
-                  {done.map((product) => (
+                  {paginatedDone.map((product) => (
                     <tr key={product.id} className="border-b last:border-b-0 opacity-60 hover:opacity-100 transition-opacity">
+                      <td className="px-2 py-1 text-center w-10">
+                        <Thumbnail src={firstImageUrl(product.zdjecie)} />
+                      </td>
                       <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
                         {product.sku || product.id}
                       </td>
@@ -643,8 +1051,6 @@ export function GoogleSheetsTab() {
                           variant="ghost"
                           className="gap-1 text-xs h-7"
                           onClick={() => {
-                            // Navigate to edit tab with this product
-                            // For now, we emit a custom event that page.tsx can listen to
                             window.dispatchEvent(
                               new CustomEvent("sheets:edit-product", {
                                 detail: { productId: product.bl_product_id },
@@ -660,8 +1066,134 @@ export function GoogleSheetsTab() {
                   ))}
                 </tbody>
               </table>
+              {done.length > donePerPage && (
+                <div className="border-t border-border px-4 py-2">
+                  <PaginationControls
+                    currentPage={safeDonePage}
+                    totalPages={doneTotalPages}
+                    itemsPerPage={donePerPage}
+                    onPageChange={setDonePage}
+                    onItemsPerPageChange={(n) => { setDonePerPage(n); setDonePage(1); }}
+                    totalItems={done.length}
+                  />
+                </div>
+              )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Missing URL Dialog */}
+      {showMissingUrlDialog && missingUrlProducts.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowMissingUrlDialog(false)} />
+          <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg mx-4 overflow-hidden">
+            <div className="px-5 py-4 border-b border-border">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="size-5 text-amber-500" />
+                <h3 className="text-sm font-semibold">Brakujące linki do produktów</h3>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {missingUrlProducts.length} {missingUrlProducts.length === 1 ? "produkt nie ma" : "produktów nie ma"} wklejonego linku.
+                Wklej linki poniżej lub pomiń te produkty.
+              </p>
+            </div>
+
+            <div className="px-5 py-3 max-h-[50vh] overflow-y-auto space-y-3">
+              {missingUrlProducts.map((product) => (
+                <div key={product.id} className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium truncate">{product.nazwa || product.id}</span>
+                    {product.sku && (
+                      <span className="text-[10px] font-mono text-muted-foreground">SKU: {product.sku}</span>
+                    )}
+                  </div>
+                  <input
+                    type="url"
+                    value={missingUrlDrafts[product.id] ?? ""}
+                    onChange={(e) =>
+                      setMissingUrlDrafts((prev) => ({ ...prev, [product.id]: e.target.value }))
+                    }
+                    placeholder="https://..."
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowMissingUrlDialog(false)}
+              >
+                Anuluj
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleMissingUrlSkip}
+                className="gap-1.5"
+              >
+                <SkipForward className="size-3.5" />
+                Pomiń produkty bez linków
+              </Button>
+              {Object.values(missingUrlDrafts).some((v) => v.trim()) && (
+                <Button
+                  size="sm"
+                  onClick={handleMissingUrlSave}
+                  className="gap-1.5"
+                >
+                  Zapisz linki i kontynuuj
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset All Dialog */}
+      {showResetDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowResetDialog(false)} />
+          <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
+            <div className="px-5 py-4 border-b border-border">
+              <div className="flex items-center gap-2">
+                <RotateCcw className="size-5 text-destructive" />
+                <h3 className="text-sm font-semibold">Zacznij od nowa</h3>
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                Wszystkie produkty zostaną zresetowane do stanu początkowego. Wyczyszczone zostaną:
+              </p>
+              <ul className="text-xs text-muted-foreground mt-1.5 space-y-0.5 ml-4 list-disc">
+                <li>Statusy (w trakcie, w kolejce, błędy, dodane)</li>
+                <li>Wklejone URL-e producentów</li>
+                <li>Powiązania z produktami BaseLinker</li>
+              </ul>
+              <p className="text-xs text-muted-foreground mt-2">
+                Dane z arkusza Google Sheets <strong>nie zostaną</strong> usunięte.
+              </p>
+            </div>
+
+            <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowResetDialog(false)}
+              >
+                Anuluj
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={confirmResetAll}
+                className="gap-1.5"
+              >
+                <RotateCcw className="size-3.5" />
+                Resetuj wszystko
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

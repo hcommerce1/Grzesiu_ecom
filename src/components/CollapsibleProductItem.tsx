@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { ChevronDown, ChevronUp, CheckCircle2, XCircle, Loader2, Send, Clock, Trash2 } from "lucide-react"
+import { useState, useEffect, useRef } from "react"
+import { ChevronDown, ChevronUp, CheckCircle2, XCircle, Loader2, Clock, Trash2 } from "lucide-react"
 import { ProductDisplay } from "./ProductDisplay"
 import { BaselinkerWorkflowPanel } from "./BaselinkerWorkflowPanel"
 import { Button } from "@/components/ui/button"
@@ -39,8 +39,13 @@ const statusConfig = {
 }
 
 export function CollapsibleProductItem({ item, index, onRemove }: Props) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [showWorkflow, setShowWorkflow] = useState(false)
+  const [isOpen, setIsOpen] = useState(true)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => { if (confirmTimer.current) clearTimeout(confirmTimer.current) }
+  }, [])
 
   const hasData = item.status === "success" && item.product
   const canExpand = hasData || item.status === "error"
@@ -99,29 +104,35 @@ export function CollapsibleProductItem({ item, index, onRemove }: Props) {
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-          {hasData && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setShowWorkflow(true)
-                if (!isOpen) setIsOpen(true)
-              }}
-              className="gap-1.5 text-xs"
-            >
-              <Send className="size-3.5" />
-              <span className="hidden sm:inline">BaseLinker</span>
-            </Button>
-          )}
           {onRemove && (
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => onRemove(item.id)}
-              className="text-muted-foreground hover:text-destructive"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
+            confirmDelete ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  if (confirmTimer.current) clearTimeout(confirmTimer.current)
+                  setConfirmDelete(false)
+                  onRemove(item.id)
+                }}
+                className="gap-1 text-xs animate-pulse"
+              >
+                <Trash2 className="size-3.5" />
+                Na pewno?
+              </Button>
+            ) : (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => {
+                  setConfirmDelete(true)
+                  if (confirmTimer.current) clearTimeout(confirmTimer.current)
+                  confirmTimer.current = setTimeout(() => setConfirmDelete(false), 3000)
+                }}
+                className="text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            )
           )}
         </div>
 
@@ -152,10 +163,10 @@ export function CollapsibleProductItem({ item, index, onRemove }: Props) {
               {hasData && (
                 <ProductDisplay product={item.product!} originalProduct={item.originalProduct} />
               )}
-              {hasData && showWorkflow && (
+              {hasData && (
                 <BaselinkerWorkflowPanel
                   productData={item.product!}
-                  onClose={() => setShowWorkflow(false)}
+                  onClose={() => setIsOpen(false)}
                 />
               )}
             </div>

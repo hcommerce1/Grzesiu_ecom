@@ -26,48 +26,73 @@ export const extractVidaXL: SiteExtractor = async (page, url) => {
         }
 
         function extractImages(): string[] {
-            const images = new Set<string>();
+            const seen = new Set<string>();
+            const images: string[] = [];
 
-            // JSON-LD images
+            function isJunk(src: string): boolean {
+                const lower = src.toLowerCase();
+                const pathOnly = lower.split('?')[0];
+                if (pathOnly.endsWith('.svg') || pathOnly.endsWith('.ico')) return true;
+                if (lower.includes('unavailable') || lower.includes('placeholder') || lower.includes('no-image')) return true;
+                if (lower.includes('/logo') || lower.includes('/icon') || lower.includes('/favicon')) return true;
+                if (lower.includes('vdxl.im')) return true;
+                if (lower.includes('1x1') || lower.includes('sprite')) return true;
+                return false;
+            }
+
+            function addImage(src: string) {
+                if (!src || isJunk(src)) return;
+                const full = src.startsWith('http') ? src : new URL(src, window.location.origin).href;
+                const hashMatch = full.match(/\/(dw[a-f0-9]{8,})\//);
+                const key = hashMatch ? hashMatch[1] : full;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    images.push(full);
+                }
+            }
+
+            // Helper: check if element is inside a recommendation/cross-sell section
+            function isInsideRecommendations(el: Element): boolean {
+                let parent = el.parentElement;
+                while (parent) {
+                    const cls = (parent.className || '').toLowerCase();
+                    if (cls.includes('product-tile') || cls.includes('recommend') ||
+                        cls.includes('cross-sell') || cls.includes('similar') ||
+                        cls.includes('also-bought') || cls.includes('recently') ||
+                        cls.includes('einstein')) return true;
+                    parent = parent.parentElement;
+                }
+                return false;
+            }
+
+            // 1. JSON-LD images (most reliable, only for this product)
             if (jsonLd?.image) {
                 const imgs = Array.isArray(jsonLd.image) ? jsonLd.image : [jsonLd.image];
                 for (const img of imgs) {
                     const src = typeof img === 'string' ? img : img?.url || img?.contentUrl || '';
-                    if (src) images.add(src);
+                    addImage(src);
                 }
             }
 
-            // Gallery images
-            document.querySelectorAll('[data-sourceimg], [data-src*="/dw/image/"], img[src*="/dw/image/"]').forEach((el) => {
-                const src = (el as HTMLElement).getAttribute('data-sourceimg')
-                    || (el as HTMLElement).getAttribute('data-src')
-                    || (el as HTMLImageElement).src;
-                if (src && !src.includes('1x1') && !src.includes('placeholder')) {
-                    images.add(src.startsWith('http') ? src : new URL(src, window.location.origin).href);
-                }
-            });
+            // 2. Primary product gallery only (exclude recommendations)
+            const galleryContainer = document.querySelector('.primary-images, .product-details, .product-detail');
+            if (galleryContainer) {
+                galleryContainer.querySelectorAll('img, [data-sourceimg]').forEach((el) => {
+                    if (isInsideRecommendations(el)) return;
+                    const src = (el as HTMLElement).getAttribute('data-sourceimg')
+                        || (el as HTMLElement).getAttribute('data-src')
+                        || (el as HTMLImageElement).src || '';
+                    addImage(src);
+                });
+            }
 
-            // Product detail images
-            document.querySelectorAll('.product-detail img, .product-gallery img, .product-images img, [class*="gallery"] img, [class*="carousel"] img').forEach((img) => {
-                const src = (img as HTMLImageElement).src || (img as HTMLElement).getAttribute('data-src') || '';
-                if (src && !src.includes('1x1') && !src.includes('placeholder') && !src.includes('sprite')) {
-                    images.add(src.startsWith('http') ? src : new URL(src, window.location.origin).href);
-                }
-            });
-
-            // Thumbnail links (often link to hi-res)
-            document.querySelectorAll('a[href*="/dw/image/"], a[data-href*="/dw/image/"]').forEach((a) => {
-                const href = (a as HTMLAnchorElement).href || (a as HTMLElement).getAttribute('data-href') || '';
-                if (href) images.add(href);
-            });
-
-            // og:image fallback
-            if (images.size === 0) {
+            // 3. og:image fallback
+            if (images.length === 0) {
                 const og = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
-                if (og) images.add(og);
+                if (og) addImage(og);
             }
 
-            return Array.from(images).slice(0, 30);
+            return images.slice(0, 30);
         }
 
         function extractDescription(): string {
@@ -75,7 +100,7 @@ export const extractVidaXL: SiteExtractor = async (page, url) => {
             const descHeaders = document.querySelectorAll('h2, h3');
             for (const h of Array.from(descHeaders)) {
                 const text = h.textContent?.trim()?.toLowerCase() || '';
-                if (text === 'opis' || text === 'description' || text === 'produktbeschreibung') {
+                if (text === 'opis' || text === 'description' || text === 'produktbeschreibung' || text === 'beschreibung') {
                     const nextEl = h.nextElementSibling;
                     if (nextEl) return formatDescriptionHtml(nextEl as HTMLElement);
                 }
@@ -137,6 +162,10 @@ export const extractVidaXL: SiteExtractor = async (page, url) => {
                     });
                 });
             }
+
+            // Remove fields that are stored separately
+            const removeKeys = ['EAN', 'ean', 'SKU', 'sku', 'Brand', 'brand', 'Marke'];
+            for (const k of removeKeys) delete attrs[k];
 
             return attrs;
         }

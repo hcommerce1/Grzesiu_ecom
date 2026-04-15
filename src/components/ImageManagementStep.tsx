@@ -10,9 +10,11 @@ import {
   GripVertical,
   Eye,
   Star,
-  RefreshCw,
   Upload,
   Cloud,
+  ChevronDown,
+  ChevronRight,
+  Wand2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -30,6 +32,7 @@ interface Props {
 type UploadProvider = "auto" | "r2" | "cloudinary"
 
 export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: Props) {
+  const [showGenPanel, setShowGenPanel] = useState(false)
   const [analyzingAll, setAnalyzingAll] = useState(false)
   const [analyzingUrls, setAnalyzingUrls] = useState<Set<string>>(new Set())
   const [analysisError, setAnalysisError] = useState("")
@@ -280,7 +283,7 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
             className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
             title={img.aiDescription ? "Analizuj ponownie" : "Analizuj"}
           >
-            <RefreshCw className={cn("size-4", isAnalyzing && "animate-spin")} />
+            {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           </button>
           <button
             onClick={() => handleRemove(img.url)}
@@ -346,22 +349,45 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
         )}
       </div>
 
-      {/* Image Generation Panel */}
-      <ImageGenerationPanel
-        activeImages={activeImages}
-        onAddImage={(url) => {
-          const current = metaRef.current
-          const maxOrder = current.length > 0 ? Math.max(...current.map(m => m.order)) : -1
-          const newImage: ImageMeta = { url, order: maxOrder + 1, removed: false, aiDescription: "", aiConfidence: 0, userDescription: "", isFeatureImage: false, features: [] }
-          onImagesMetaChange([...current, newImage])
-        }}
-        onReplaceImage={(oldUrl, newUrl) => {
-          updateMeta(prev => prev.map(m => (m.url === oldUrl ? { ...m, url: newUrl } : m)))
-        }}
-      />
+      {/* Image Generation Panel — collapsible */}
+      <div className="rounded-xl border border-border overflow-hidden">
+        <button
+          onClick={() => setShowGenPanel(!showGenPanel)}
+          className="w-full flex items-center justify-between px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Wand2 className="size-4 text-primary" />
+            <span className="text-sm font-semibold">Generuj / Edytuj zdjęcia AI</span>
+          </div>
+          {showGenPanel ? <ChevronDown className="size-4 text-muted-foreground" /> : <ChevronRight className="size-4 text-muted-foreground" />}
+        </button>
+        {showGenPanel && (
+          <div className="border-t border-border">
+            <ImageGenerationPanel
+              activeImages={activeImages}
+              onAddImage={(url) => {
+                const current = metaRef.current
+                const maxOrder = current.length > 0 ? Math.max(...current.map(m => m.order)) : -1
+                const newImage: ImageMeta = { url, order: maxOrder + 1, removed: false, aiDescription: "", aiConfidence: 0, userDescription: "", isFeatureImage: false, features: [] }
+                onImagesMetaChange([...current, newImage])
+              }}
+              onReplaceImage={(oldUrl, newUrl) => {
+                updateMeta(prev => prev.map(m => (m.url === oldUrl ? { ...m, url: newUrl } : m)))
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Separator between AI generation and gallery */}
+      <div className="flex items-center gap-3 px-1">
+        <div className="flex-1 h-px bg-border" />
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Galeria zdjęć</span>
+        <div className="flex-1 h-px bg-border" />
+      </div>
 
       {/* Scrollable images container */}
-      <div className="max-h-[60vh] overflow-y-auto">
+      <div>
         <Reorder.Group axis="y" values={activeImages} onReorder={handleReorder} className="space-y-2">
           {activeImages.map((img) => (
             <ImageCard key={img.url} img={img} />

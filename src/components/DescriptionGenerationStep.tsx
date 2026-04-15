@@ -18,6 +18,8 @@ import type {
   ChangeClassification,
   DescriptionVersion,
   TargetableSection,
+  AllegroParameter,
+  SheetMeta,
 } from "@/lib/types"
 
 interface Props {
@@ -41,6 +43,10 @@ interface Props {
   /** Section targeting */
   targetedSections?: TargetableSection[]
   onSectionTargetToggle?: (section: TargetableSection) => void
+  /** Allegro parameters (for required-check before generation) */
+  allegroParameters?: AllegroParameter[]
+  /** Sheet metadata — uwagi krótkie, magazynowe, stan techniczny */
+  sheetMeta?: SheetMeta
 }
 
 export function DescriptionGenerationStep({
@@ -62,6 +68,8 @@ export function DescriptionGenerationStep({
   previewSlot,
   targetedSections,
   onSectionTargetToggle,
+  allegroParameters,
+  sheetMeta,
 }: Props) {
   const [generating, setGenerating] = useState(false)
   const [generatingTitle, setGeneratingTitle] = useState(false)
@@ -71,6 +79,23 @@ export function DescriptionGenerationStep({
   const [promptOpen, setPromptOpen] = useState(false)
   const [promptText, setPromptText] = useState("")
   const hasTriggered = useRef(false)
+  const [paramCheckSkipped, setParamCheckSkipped] = useState(false)
+
+  // Buduj string uwag z sheetMeta (uszkodzenia, stan techniczny)
+  const uwagiText = (() => {
+    if (!sheetMeta) return ''
+    const parts: string[] = []
+    if (sheetMeta.uwagiKrotkie) parts.push(`Uwagi krótkie: ${sheetMeta.uwagiKrotkie}`)
+    if (sheetMeta.uwagiMagazynowe) parts.push(`Uwagi magazynowe: ${sheetMeta.uwagiMagazynowe}`)
+    if (sheetMeta.stanTechniczny) parts.push(`Stan techniczny: ${sheetMeta.stanTechniczny}`)
+    return parts.join('\n')
+  })()
+
+  // Sprawdź czy wymagane parametry są uzupełnione
+  const missingRequiredCount = (allegroParameters ?? []).filter(p =>
+    p.required && !filledParameters[p.id]
+  ).length
+  const hasRequiredParamsMissing = missingRequiredCount > 0 && !paramCheckSkipped
 
   // ─── Wersjonowanie opisu ───
   const MAX_VERSIONS = 20
@@ -142,7 +167,8 @@ export function DescriptionGenerationStep({
   useEffect(() => {
     if (!generatedDescription) {
       // Brak opisu — generuj automatycznie tytuł i opis (tylko raz)
-      if (!hasTriggered.current) {
+      // Ale NIE gdy brakuje wymaganych parametrów
+      if (!hasTriggered.current && !hasRequiredParamsMissing) {
         hasTriggered.current = true
         generateAll()
       }
@@ -221,6 +247,7 @@ export function DescriptionGenerationStep({
           categoryPath,
           categoryId,
           prompt: descriptionPrompt,
+          uwagi: uwagiText,
         }),
       })
 
@@ -245,7 +272,7 @@ export function DescriptionGenerationStep({
     } finally {
       setGenerating(false)
     }
-  }, [title, translatedData, imagesMeta, filledParameters, categoryPath, categoryId, descriptionPrompt, onDescriptionChange, onSnapshotChange, generatedDescription, pushVersion])
+  }, [title, translatedData, imagesMeta, filledParameters, categoryPath, categoryId, descriptionPrompt, uwagiText, onDescriptionChange, onSnapshotChange, generatedDescription, pushVersion])
 
   // ─── Generuj wszystko równolegle ───
 
@@ -288,6 +315,7 @@ export function DescriptionGenerationStep({
         categoryPath,
         categoryId,
         prompt: descriptionPrompt,
+        uwagi: uwagiText,
       }),
     }).then(r => r.json())
 
@@ -324,7 +352,7 @@ export function DescriptionGenerationStep({
       setGenerating(false)
       setGeneratingTitle(false)
     }
-  }, [title, translatedData, imagesMeta, filledParameters, categoryPath, categoryId, descriptionPrompt, onDescriptionChange, onSnapshotChange, onTitleChange, onCandidatesChange, generatedDescription, pushVersion])
+  }, [title, translatedData, imagesMeta, filledParameters, categoryPath, categoryId, descriptionPrompt, uwagiText, onDescriptionChange, onSnapshotChange, onTitleChange, onCandidatesChange, generatedDescription, pushVersion])
 
   const handleSectionUpdate = useCallback(
     (sectionId: string, heading?: string, bodyHtml?: string) => {
@@ -391,32 +419,15 @@ export function DescriptionGenerationStep({
     localStorage.removeItem(DESCRIPTION_PROMPT_STORAGE_KEY)
   }
 
-  // ─── Skeleton loading (both generating) ───
+  // ─── Loading spinner (centered) ───
 
-  if (generating && !generatedDescription && generatingTitle) {
+  if (generating && !generatedDescription) {
     return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          Generuję tytuł i opis produktu...
-        </div>
-        {/* Title skeleton */}
-        <div className="animate-pulse space-y-2">
-          <div className="h-4 w-32 rounded bg-muted" />
-          <div className="h-10 w-full rounded-lg bg-muted" />
-        </div>
-        {/* Description skeleton */}
-        {[...Array(4)].map((_, i) => (
-          <div key={i} className="flex gap-4 animate-pulse">
-            <div className="w-[45%] h-32 rounded-lg bg-muted" />
-            <div className="flex-1 space-y-2">
-              <div className="h-5 w-2/3 rounded bg-muted" />
-              <div className="h-3 w-full rounded bg-muted" />
-              <div className="h-3 w-5/6 rounded bg-muted" />
-              <div className="h-3 w-4/6 rounded bg-muted" />
-            </div>
-          </div>
-        ))}
+      <div className="flex flex-col items-center justify-center py-24">
+        <Loader2 className="size-12 animate-spin text-primary" />
+        <p className="mt-4 text-sm text-muted-foreground animate-pulse">
+          Generuję opis produktu...
+        </p>
       </div>
     )
   }
@@ -460,6 +471,34 @@ export function DescriptionGenerationStep({
 
   return (
     <div className="flex flex-col gap-4">
+
+      {/* ═══ BANNER BRAKUJĄCYCH PARAMETRÓW ═══ */}
+      {hasRequiredParamsMissing && (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-800">
+          <div className="flex items-center gap-2 text-sm">
+            <AlertTriangle className="size-4 shrink-0" />
+            <span>
+              Brakuje <strong>{missingRequiredCount}</strong> wymaganych parametrów — opis będzie niepełny.
+              Wróć do poprzedniego kroku i uzupełnij parametry.
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs shrink-0 gap-1"
+            onClick={() => {
+              setParamCheckSkipped(true)
+              // Odppal auto-generację jeśli jeszcze nie było opisu
+              if (!generatedDescription && !hasTriggered.current) {
+                hasTriggered.current = true
+                generateAll()
+              }
+            }}
+          >
+            Pomiń
+          </Button>
+        </div>
+      )}
 
       {/* ═══ BANNER ZMIAN (nie blokujący) ═══ */}
       {showChangeBanner && changeClassification.severity !== 'none' && (
@@ -589,171 +628,6 @@ export function DescriptionGenerationStep({
       {/* ═══ PODGLĄD MARKETPLACE ═══ */}
       {previewSlot}
 
-      {/* ═══ SEKCJE OPISU ═══ */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="text-xs font-semibold text-muted uppercase tracking-wider">
-            Sekcje opisu ({sections.length})
-          </div>
-          {/* Nawigacja wersji */}
-          {versions.length > 0 && (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <button
-                onClick={() => navigateVersion(-1)}
-                disabled={versionIndex === 0}
-                className="p-0.5 rounded hover:bg-muted disabled:opacity-30 transition-colors"
-                title="Poprzednia wersja"
-              >
-                <ChevronLeft className="size-3.5" />
-              </button>
-              <span className="flex items-center gap-1 px-1">
-                <History className="size-3" />
-                {versionIndex === -1
-                  ? `Aktualna (${versions.length} ${versions.length === 1 ? 'wersja' : versions.length < 5 ? 'wersje' : 'wersji'} w historii)`
-                  : `Wersja ${versionIndex + 1}/${versions.length}`}
-              </span>
-              <button
-                onClick={() => navigateVersion(1)}
-                disabled={versionIndex === -1}
-                className="p-0.5 rounded hover:bg-muted disabled:opacity-30 transition-colors"
-                title="Następna wersja"
-              >
-                <ChevronRight className="size-3.5" />
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Button
-            onClick={() => setPromptOpen(true)}
-            variant="ghost"
-            size="sm"
-            className="gap-1 text-muted-foreground"
-            title="Edytuj prompt"
-          >
-            <Settings className="size-3" />
-          </Button>
-          <Button
-            onClick={generating ? undefined : generateAll}
-            disabled={generating || generatingTitle}
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-          >
-            {generating ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <RefreshCw className="size-3" />
-            )}
-            {generating ? "Generuję..." : "Regeneruj wszystko"}
-          </Button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-
-      {sections.length === 0 && !error && !generating && (
-        <div className="text-center py-8 text-muted-foreground">
-          <p className="text-sm">Brak sekcji opisu.</p>
-          <Button onClick={generateAll} size="sm" className="mt-3 gap-1.5">
-            <Sparkles className="size-3.5" />
-            Generuj tytuł i opis
-          </Button>
-        </div>
-      )}
-
-      {/* Sekcje */}
-      {sections.map((section) => {
-        const isSectionTargeted = targetedSections?.some(s => s.id === section.id) ?? false
-        return (
-          <div
-            key={section.id}
-            className={cn(
-              "rounded-xl border bg-card p-4 space-y-3 cursor-pointer transition-all",
-              isSectionTargeted
-                ? "ring-2 ring-primary border-primary"
-                : "border-border hover:border-primary/40"
-            )}
-            onClick={(e) => {
-              if ((e.target as HTMLElement).closest('input, textarea, button')) return
-              onSectionTargetToggle?.({
-                id: section.id,
-                label: section.heading || `Sekcja ${section.id}`,
-                type: 'description-section',
-              })
-            }}
-          >
-            {section.layout === "images-only" ? (
-              /* Sekcja images-only */
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <Badge variant="secondary" className="text-[10px]">
-                    <ImageIcon className="size-2.5 mr-1" />
-                    Zdjęcia ({section.imageUrls.length})
-                  </Badge>
-                  <button
-                    onClick={() => handleSectionRemove(section.id)}
-                    className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-                  >
-                    <Trash2 className="size-3" />
-                  </button>
-                </div>
-                <div className="flex gap-3">
-                  {section.imageUrls.map((url, j) => (
-                    <img
-                      key={j}
-                      src={url}
-                      alt=""
-                      className="w-1/2 h-28 object-cover rounded-lg border border-border"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              /* Sekcja image-text */
-              <div className="flex gap-4">
-                <div className="w-[40%] flex-shrink-0">
-                  {section.imageUrls[0] && (
-                    <img
-                      src={section.imageUrls[0]}
-                      alt=""
-                      className="w-full h-auto rounded-lg border border-border"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                    />
-                  )}
-                </div>
-                <div className="flex-1 space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <input
-                      value={section.heading}
-                      onChange={(e) => handleSectionUpdate(section.id, e.target.value, undefined)}
-                      placeholder="Nagłówek sekcji..."
-                      className="flex-1 font-semibold text-sm bg-transparent border-none outline-none placeholder:text-muted-foreground/50"
-                    />
-                    <button
-                      onClick={() => handleSectionRemove(section.id)}
-                      className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors flex-shrink-0"
-                    >
-                      <Trash2 className="size-3" />
-                    </button>
-                  </div>
-                  <textarea
-                    value={section.bodyHtml}
-                    onChange={(e) => handleSectionUpdate(section.id, undefined, e.target.value)}
-                    rows={4}
-                    className="w-full resize-none rounded-lg border border-input bg-background px-2.5 py-1.5 text-xs outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/20"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        )
-      })}
     </div>
   )
 }

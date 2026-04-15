@@ -158,12 +158,13 @@ export interface ProductSession {
   is_bundle?: boolean;
   bundle_products?: Record<string, number>;
   data: ProductData;
-  allegroCategory?: AllegroCategory;
-  allegroParameters?: AllegroParameter[];
-  filledParameters?: Record<string, string | string[]>;
+  allegroCategory?: AllegroCategory | null;
+  allegroParameters?: AllegroParameter[] | null;
+  filledParameters?: Record<string, string | string[]> | null;
   commissionInfo?: string;
   images: string[];
-  tax_rate: number;
+  tax_rate: number | string;
+  editableFieldValues?: Record<string, string>;
   inventoryId?: number;
   defaultWarehouse?: string;
   fieldSelection?: Partial<FieldSelection>;
@@ -176,6 +177,8 @@ export interface ProductSession {
   generatedDescription?: GeneratedDescription;
   descriptionInputSnapshot?: DescriptionInputSnapshot;
   descriptionPrompt?: string;
+  // AI auto-fill results (persisted so they survive page reload)
+  aiFillResults?: AutoFillEntry[];
   // Google Sheets integration
   sheetProductId?: string;
   sheetMeta?: SheetMeta;
@@ -197,6 +200,8 @@ export interface SheetMeta {
   dlugosc: string;
   szerokosc: string;
   wysokosc: string;
+  /** Dynamic extra columns from the sheet (header name → value) */
+  [key: string]: string;
 }
 
 export interface ParameterMatchResult {
@@ -260,7 +265,14 @@ export interface ChangeClassification {
   changes: ChangeDetail[]
 }
 
-export type ChatActionType = 'update_title' | 'update_parameter' | 'update_section' | 'regenerate_description' | 'expand_section' | 'request_scrape' | 'reorder_section_images'
+export type ChatActionType =
+  | 'update_title' | 'update_parameter' | 'update_section'
+  | 'regenerate_description' | 'expand_section' | 'request_scrape'
+  | 'reorder_section_images'
+  | 'add_image_to_section' | 'remove_image_from_section'
+  | 'remove_section' | 'add_section'
+  | 'change_section_layout' | 'reorder_sections'
+  | 'clear_targets'
 
 export interface ChatAction {
   type: ChatActionType
@@ -273,6 +285,14 @@ export interface ChatAction {
   scrapeUrl?: string
   /** For reorder_section_images: new ordered list of image URLs */
   imageUrls?: string[]
+  /** Single image URL for add/remove image actions */
+  imageUrl?: string
+  /** Section layout for change_section_layout */
+  layout?: 'image-text' | 'images-only'
+  /** Ordered section IDs for reorder_sections */
+  sectionIds?: string[]
+  /** Insert after this section for add_section */
+  afterSectionId?: string
 }
 
 // ─── Section Targeting ───

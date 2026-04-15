@@ -11,6 +11,8 @@ import { Package, Loader2, Search, BarChart2, FileSpreadsheet } from "lucide-rea
 import { cn } from "@/lib/utils"
 import { GoogleSheetsTab } from "@/components/GoogleSheetsTab"
 import { AllegroAuthGate } from "@/components/AllegroAuthGate"
+import { ScrapeHistoryPanel } from "@/components/ScrapeHistoryPanel"
+import { useScrapeHistoryStore, type ScrapeHistoryEntry } from "@/lib/stores/scrape-history-store"
 import type { ScrapeResponse } from "@/lib/types"
 
 type Tab = "nowe" | "edytuj" | "sheets"
@@ -24,6 +26,76 @@ export default function Home() {
   const [processedCount, setProcessedCount] = useState(0)
 
   const abortRef = useRef<AbortController | null>(null)
+  const processingRef = useRef(false)
+  const queueRef = useRef<{ id: string; url: string }[]>([])
+  const { getEntry, addEntry } = useScrapeHistoryStore()
+
+  const handleLoadFromHistory = (entry: ScrapeHistoryEntry) => {
+    const item: ScrapedItem = {
+      id: `e${++idCounter}`,
+      url: entry.url,
+      status: "success",
+      product: entry.product,
+      originalProduct: entry.originalProduct,
+    }
+    setItems([item])
+  }
+
+  const processQueue = async (ctrl: AbortController) => {
+    while (queueRef.current.length > 0 && !ctrl.signal.aborted) {
+      const { id, url } = queueRef.current.shift()!
+
+      // Check history cache
+      const cached = getEntry(url)
+      if (cached) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === id ? { ...it, status: "success", product: cached.product, originalProduct: cached.originalProduct } : it
+          )
+        )
+        setProcessedCount((c) => c + 1)
+        continue
+      }
+
+      setItems((prev) => prev.map((it) => it.id === id ? { ...it, status: "loading" } : it))
+
+      try {
+        const res = await fetch("/api/scrape", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+          signal: ctrl.signal,
+        })
+        const data: ScrapeResponse = await res.json()
+        if (ctrl.signal.aborted) break
+
+        if (data.success) {
+          addEntry(url, data.data, data.originalData)
+          setItems((prev) =>
+            prev.map((it) =>
+              it.id === id ? { ...it, status: "success", product: data.data, originalProduct: data.originalData } : it
+            )
+          )
+        } else {
+          setItems((prev) =>
+            prev.map((it) => it.id === id ? { ...it, status: "error", error: data.error } : it)
+          )
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") break
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === id ? { ...it, status: "error", error: err instanceof Error ? err.message : "Błąd sieci" } : it
+          )
+        )
+      }
+
+      setProcessedCount((c) => c + 1)
+      if (queueRef.current.length > 0 && !ctrl.signal.aborted) {
+        await new Promise((r) => setTimeout(r, 1200))
+      }
+    }
+  }
 
   const handleScrapeBatch = async (urls: string[]) => {
     if (urls.length === 0) return
@@ -31,58 +103,32 @@ export default function Home() {
     const newItems: ScrapedItem[] = urls.map((url) => ({
       id: `e${++idCounter}`,
       url,
-      status: "pending",
+      status: "pending" as const,
     }))
-    setItems(newItems)
+
+    // If already processing, append to queue
+    if (processingRef.current) {
+      setItems((prev) => [...prev, ...newItems])
+      queueRef.current.push(...newItems.map((it) => ({ id: it.id, url: it.url })))
+      return
+    }
+
+    setItems((prev) => [...prev.filter(it => it.status === "success" || it.status === "error"), ...newItems])
     setIsProcessing(true)
     setProcessedCount(0)
+    processingRef.current = true
 
     abortRef.current?.abort()
     const ctrl = new AbortController()
     abortRef.current = ctrl
 
-    for (let i = 0; i < urls.length; i++) {
-      if (ctrl.signal.aborted) break
+    queueRef.current = newItems.map((it) => ({ id: it.id, url: it.url }))
+    await processQueue(ctrl)
 
-      setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, status: "loading" } : it))
-
-      try {
-        const res = await fetch("/api/scrape", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: urls[i] }),
-          signal: ctrl.signal,
-        })
-        const data: ScrapeResponse = await res.json()
-        if (ctrl.signal.aborted) break
-
-        if (data.success) {
-          setItems((prev) =>
-            prev.map((it, idx) =>
-              idx === i ? { ...it, status: "success", product: data.data, originalProduct: data.originalData } : it
-            )
-          )
-        } else {
-          setItems((prev) =>
-            prev.map((it, idx) => idx === i ? { ...it, status: "error", error: data.error } : it)
-          )
-        }
-      } catch (err: unknown) {
-        if (err instanceof Error && err.name === "AbortError") break
-        setItems((prev) =>
-          prev.map((it, idx) =>
-            idx === i ? { ...it, status: "error", error: err instanceof Error ? err.message : "Błąd sieci" } : it
-          )
-        )
-      }
-
-      setProcessedCount(i + 1)
-      if (i < urls.length - 1 && !ctrl.signal.aborted) {
-        await new Promise((r) => setTimeout(r, 1200))
-      }
+    if (!ctrl.signal.aborted) {
+      setIsProcessing(false)
+      processingRef.current = false
     }
-
-    if (!ctrl.signal.aborted) setIsProcessing(false)
   }
 
   const handleRemove = (id: string) => {
@@ -151,6 +197,8 @@ export default function Home() {
 
             <SearchBar onSubmit={handleScrapeBatch} isLoading={isProcessing} />
 
+            <ScrapeHistoryPanel onLoadEntry={handleLoadFromHistory} />
+
             {/* Progress bar */}
             {items.length > 0 && (
               <motion.div
@@ -174,13 +222,10 @@ export default function Home() {
             {items.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-center">
                 <div className="size-16 rounded-2xl bg-muted border border-border flex items-center justify-center mb-4">
-                  <Package className="size-8 text-muted-foreground/40" />
+                  <Package className="size-8 text-muted-foreground/60" />
                 </div>
                 <p className="text-sm text-muted-foreground">
                   Wklej linki powyżej i kliknij <strong>Scrapuj</strong>, aby pobrać dane produktów.
-                </p>
-                <p className="text-xs text-muted-foreground/60 mt-1.5">
-                  Obsługiwane: Amazon, Oninen, Costway, DWD, Aosom, Woltu i inne
                 </p>
               </div>
             ) : (
@@ -202,11 +247,15 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab: Edytuj istniejące */}
-        {tab === "edytuj" && <EditProductsTab />}
+        {/* Tab: Edytuj istniejące — kept mounted to preserve detail cache */}
+        <div style={{ display: tab === "edytuj" ? undefined : "none" }}>
+          <EditProductsTab />
+        </div>
 
-        {/* Tab: Google Sheets */}
-        {tab === "sheets" && <GoogleSheetsTab />}
+        {/* Tab: Google Sheets — kept mounted to preserve state */}
+        <div style={{ display: tab === "sheets" ? undefined : "none" }}>
+          <GoogleSheetsTab />
+        </div>
         </AllegroAuthGate>
       </main>
 

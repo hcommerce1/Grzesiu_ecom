@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getProductById, updateProduct } from '@/lib/db';
+import { getProductById, updateProduct, resetProduct } from '@/lib/db';
 import type { ProductPatch } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -55,4 +55,23 @@ export async function PATCH(
     const message = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+/**
+ * DELETE /api/sheets/products/[id]
+ * Reset a single product back to "new" state — clears URL, status, BL link, errors.
+ */
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const existing = getProductById(id);
+
+  if (!existing) {
+    return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+  }
+
+  const updated = resetProduct(id);
+  return NextResponse.json({ product: updated });
 }

@@ -18,6 +18,7 @@ interface GenerateDescriptionRequest {
   categoryPath: string;
   categoryId: string;
   prompt?: string;
+  uwagi?: string;
 }
 
 export async function POST(req: Request) {
@@ -64,6 +65,7 @@ export async function POST(req: Request) {
       parameters: parameters || '(brak)',
       image_count: activeImages.length,
       image_descriptions: imageDescriptions,
+      uwagi: body.uwagi || '(brak uwag — produkt w pełni sprawny)',
     });
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
 import { Lock, ChevronDown, ChevronRight, AlertCircle, X, Loader2 as Loader, Sparkles } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FilterableSelect, Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
@@ -22,6 +22,15 @@ const MANDATORY_LABELS: Record<string, string> = {
   tax_rate: 'Stawka VAT',
   name: 'Nazwa (name)',
 };
+
+const TAX_RATE_OPTIONS = [
+  { value: '23', label: '23%' },
+  { value: '8', label: '8%' },
+  { value: '5', label: '5%' },
+  { value: '0', label: '0%' },
+  { value: 'zw', label: 'Zwolniony (zw)' },
+  { value: 'np', label: 'Nie podlega (np)' },
+];
 
 const OPTIONAL_FIELDS: { key: string; label: string }[] = [
   { key: 'sku', label: 'SKU' },
@@ -59,6 +68,8 @@ interface FieldsAndParametersStepProps {
   fieldValues: Record<string, string>;
   onFieldSelectionChange: (sel: Partial<FieldSelection>) => void;
   onParameterValuesChange: (vals: Record<string, string | string[]>) => void;
+  /** Whether title has been AI-generated (vs original scraped title) */
+  isTitleGenerated?: boolean;
   /** Auto-match results from Google Sheets parameter matching */
   sheetMatchResults?: ParameterMatchResult[];
   /** AI auto-fill results with confidence scores */
@@ -79,6 +90,16 @@ interface FieldsAndParametersStepProps {
   initialExtraFieldValues?: Record<string, string>;
   /** Callback when extra field values change */
   onExtraFieldValuesChange?: (vals: Record<string, string>) => void;
+  /** Tax rate change callback */
+  onTaxRateChange?: (rate: number | string) => void;
+  /** Current tax rate */
+  taxRate?: number | string;
+  /** Editable field values (user overrides for ean, weight, etc.) */
+  editableFieldValues?: Record<string, string>;
+  /** Callback when editable field values change */
+  onEditableFieldValueChange?: (key: string, value: string) => void;
+  /** BL manufacturers list for manufacturer dropdown */
+  manufacturers?: { manufacturer_id: number; name: string }[];
 }
 
 /* ─── Section Header ─── */
@@ -105,7 +126,7 @@ function SectionHeader({
       ) : (
         <ChevronRight className="size-4 text-muted-foreground" />
       )}
-      <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+      <span className="text-sm font-semibold text-foreground/70 uppercase tracking-wider">
         {title}
       </span>
       <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
@@ -145,7 +166,7 @@ const FieldRow = memo(function FieldRow({
     <div
       className={cn(
         'grid grid-cols-[2rem_1fr_minmax(12rem,20rem)] items-start gap-3 px-3 py-2.5 rounded-lg transition-colors',
-        locked ? 'opacity-70' : 'hover:bg-muted/40',
+        locked ? '' : 'hover:bg-muted/40',
         validationError && 'bg-destructive/5'
       )}
     >
@@ -153,7 +174,7 @@ const FieldRow = memo(function FieldRow({
       <div className="flex items-center justify-center pt-0.5">
         {locked ? (
           <div className="flex items-center gap-1">
-            <Checkbox checked={true} disabled className="opacity-60" />
+            <Checkbox checked={true} disabled />
           </div>
         ) : (
           <Checkbox
@@ -174,14 +195,14 @@ const FieldRow = memo(function FieldRow({
         </div>
         {previewValue && previewValue.trim().length > 0 ? (
           <span
-            className="text-xs text-primary/80 font-mono truncate block max-w-[300px]"
+            className="text-xs text-primary/80 font-mono break-words block"
             title={previewValue}
           >
             {previewValue}
           </span>
         ) : (
           !children && (
-            <span className="text-xs text-muted-foreground/50 italic">brak danych</span>
+            <span className="text-xs text-muted-foreground/70 italic">brak danych</span>
           )
         )}
       </div>
@@ -360,11 +381,25 @@ const ParameterRow = memo(function ParameterRow({
     >
       {(isRequired || checked) && (
         <div className="space-y-1">
-          <ParameterEditor
-            param={param}
-            value={value}
-            onChange={handleChange}
-          />
+          <div className="flex items-start gap-1">
+            <div className="flex-1 min-w-0">
+              <ParameterEditor
+                param={param}
+                value={value}
+                onChange={handleChange}
+              />
+            </div>
+            {!isEmpty && (
+              <button
+                type="button"
+                onClick={() => onValueChange(param.id, Array.isArray(value) ? [] : '')}
+                className="mt-1.5 p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors flex-shrink-0"
+                title="Wyczyść"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
           {/* Sheet match indicators */}
           {match && match.confidence >= 0.7 && (
             <p className="text-[10px] text-green-600 flex items-center gap-1">
@@ -378,27 +413,27 @@ const ParameterRow = memo(function ParameterRow({
               Sugestia: {match.sheetValue} (niepewne)
             </p>
           )}
-          {/* AI fill — high confidence (applied) */}
-          {!match && aiFill && aiFill.confidence >= 0.8 && !isEmpty && (
-            <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/20 rounded px-1.5 py-0.5">
-              <Sparkles className="size-3 text-blue-500" />
-              <p className="text-[10px] text-blue-600 font-medium">
-                AI: {aiFill.source} ({Math.round(aiFill.confidence * 100)}%)
-              </p>
-            </div>
-          )}
-          {/* AI fill — low confidence suggestion with Apply button */}
-          {!match && aiFill && aiFill.confidence >= 0.5 && aiFill.confidence < 0.8 && (
+          {/* AI fill indicator */}
+          {!match && aiFill && aiFill.confidence >= 0.5 && (
             <div className="flex items-center gap-1.5 flex-wrap">
-              <p className="text-[10px] text-amber-600 flex items-center gap-1">
-                <span className="size-1.5 rounded-full bg-amber-400 inline-block" />
-                AI sugestia: {aiFill.source} ({Math.round(aiFill.confidence * 100)}%)
-              </p>
+              {aiFill.confidence >= 0.8 ? (
+                <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/20 rounded px-1.5 py-0.5">
+                  <Sparkles className="size-3 text-blue-500" />
+                  <p className="text-[10px] text-blue-600 font-medium">
+                    AI: {aiFill.source} ({Math.round(aiFill.confidence * 100)}%)
+                  </p>
+                </div>
+              ) : (
+                <p className="text-[10px] text-amber-600 flex items-center gap-1">
+                  <span className="size-1.5 rounded-full bg-amber-400 inline-block" />
+                  AI sugestia: {aiFill.source} ({Math.round(aiFill.confidence * 100)}%)
+                </p>
+              )}
               {isEmpty && (
                 <button
                   type="button"
                   onClick={() => onValueChange(param.id, aiFill.value)}
-                  className="text-[10px] font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 px-1.5 py-0.5 rounded transition-colors"
+                  className="text-[10px] font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 px-1.5 py-0.5 rounded transition-colors"
                 >
                   Zastosuj
                 </button>
@@ -594,6 +629,7 @@ function FieldsAndParametersStepInner({
   fieldValues,
   onFieldSelectionChange,
   onParameterValuesChange,
+  isTitleGenerated,
   sheetMatchResults,
   aiFillResults,
   aiFillStatus,
@@ -604,6 +640,11 @@ function FieldsAndParametersStepInner({
   inventoryId,
   initialExtraFieldValues,
   onExtraFieldValuesChange,
+  onTaxRateChange,
+  taxRate,
+  editableFieldValues,
+  onEditableFieldValueChange,
+  manufacturers,
 }: FieldsAndParametersStepProps) {
   const parameters = rawParameters ?? [];
 
@@ -631,9 +672,23 @@ function FieldsAndParametersStepInner({
   const [paramValues, setParamValues] = useState<Record<string, string | string[]>>(
     initialParameterValues ?? {}
   );
+  const lastSyncedParams = useRef(initialParameterValues);
+  useEffect(() => {
+    if (initialParameterValues !== lastSyncedParams.current) {
+      lastSyncedParams.current = initialParameterValues;
+      setParamValues(initialParameterValues ?? {});
+    }
+  }, [initialParameterValues]);
 
   // Extra field values stored separately
   const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>(initialExtraFieldValues ?? {});
+  const lastSyncedExtras = useRef(initialExtraFieldValues);
+  useEffect(() => {
+    if (initialExtraFieldValues !== lastSyncedExtras.current) {
+      lastSyncedExtras.current = initialExtraFieldValues;
+      setExtraFieldValues(initialExtraFieldValues ?? {});
+    }
+  }, [initialExtraFieldValues]);
 
   // Section collapse state
   const [expandedSections, setExpandedSections] = useState({
@@ -660,6 +715,7 @@ function FieldsAndParametersStepInner({
     (id: string, value: string | string[]) => {
       setParamValues((prev) => {
         const next = { ...prev, [id]: value };
+        lastSyncedParams.current = next;
         onParameterValuesChange(next);
         return next;
       });
@@ -672,6 +728,7 @@ function FieldsAndParametersStepInner({
     (key: string, value: string) => {
       setExtraFieldValues((prev) => {
         const next = { ...prev, [key]: value };
+        lastSyncedExtras.current = next;
         onExtraFieldValuesChange?.(next);
         return next;
       });
@@ -714,7 +771,7 @@ function FieldsAndParametersStepInner({
   const paramCount = parameters.length;
 
   return (
-    <div className="max-h-[65vh] overflow-y-auto -mx-1 px-1 space-y-1">
+    <div className="-mx-1 px-1 space-y-1">
       {/* ─── Section 1: Dane podstawowe ─── */}
       <SectionHeader
         title="Dane podstawowe"
@@ -731,16 +788,35 @@ function FieldsAndParametersStepInner({
               fieldKey={key}
               label={MANDATORY_LABELS[key] || key}
               checked={true}
-              locked={true}
-              previewValue={fieldValues[key]}
+              locked={key !== 'tax_rate'}
+              previewValue={key === 'tax_rate' ? undefined : fieldValues[key]}
               onToggle={toggleField}
-            />
+              conditionLabel={key === 'name' && !isTitleGenerated ? 'oryginalny — wygeneruj tytuł' : undefined}
+            >
+              {key === 'tax_rate' && (
+                <Select
+                  value={String(taxRate ?? 23)}
+                  onValueChange={(v) => onTaxRateChange?.(isNaN(Number(v)) ? v : Number(v))}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue placeholder="Stawka VAT" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TAX_RATE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </FieldRow>
           ))}
 
           {/* is_bundle toggle */}
           <div className="grid grid-cols-[2rem_1fr_minmax(12rem,20rem)] items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-muted/40">
             <div className="flex items-center justify-center pt-0.5">
-              <Checkbox checked={true} disabled className="opacity-60" />
+              <Checkbox checked={true} disabled />
             </div>
             <div className="min-w-0 pt-0.5">
               <span className="text-sm text-foreground">Bundle (zestaw)</span>
@@ -797,9 +873,10 @@ function FieldsAndParametersStepInner({
           {/* Separator between mandatory and optional */}
           <div className="mx-3 my-2 h-px bg-border/50" />
 
-          {/* Optional fields */}
+          {/* Optional fields with inline editors */}
           {OPTIONAL_FIELDS.map((f) => {
             const checked = !!selection[f.key as keyof FieldSelection];
+            const efvVal = editableFieldValues?.[f.key] ?? '';
             return (
               <FieldRow
                 key={f.key}
@@ -807,9 +884,136 @@ function FieldsAndParametersStepInner({
                 label={f.label}
                 checked={checked}
                 locked={false}
-                previewValue={fieldValues[f.key]}
+                previewValue={!checked ? fieldValues[f.key] : undefined}
                 onToggle={toggleField}
-              />
+              >
+                {checked && f.key === 'ean' && (
+                  <Input
+                    type="text"
+                    value={efvVal || fieldValues['ean'] || ''}
+                    onChange={(e) => onEditableFieldValueChange?.('ean', e.target.value)}
+                    placeholder="Kod EAN"
+                  />
+                )}
+                {checked && f.key === 'sku' && (
+                  <Input
+                    type="text"
+                    value={efvVal || fieldValues['sku'] || ''}
+                    onChange={(e) => onEditableFieldValueChange?.('sku', e.target.value)}
+                    placeholder="SKU"
+                  />
+                )}
+                {checked && f.key === 'weight' && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={efvVal || fieldValues['weight'] || ''}
+                      onChange={(e) => onEditableFieldValueChange?.('weight', e.target.value)}
+                      placeholder="0.00"
+                    />
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">kg</span>
+                  </div>
+                )}
+                {checked && f.key === 'dimensions' && (
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-muted-foreground block mb-0.5">Wys. (cm)</label>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={editableFieldValues?.['height'] ?? ''}
+                        onChange={(e) => onEditableFieldValueChange?.('height', e.target.value)}
+                        placeholder="0"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] text-muted-foreground block mb-0.5">Szer. (cm)</label>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={editableFieldValues?.['width'] ?? ''}
+                        onChange={(e) => onEditableFieldValueChange?.('width', e.target.value)}
+                        placeholder="0"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] text-muted-foreground block mb-0.5">Dł. (cm)</label>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={editableFieldValues?.['length'] ?? ''}
+                        onChange={(e) => onEditableFieldValueChange?.('length', e.target.value)}
+                        placeholder="0"
+                      />
+                    </div>
+                  </div>
+                )}
+                {checked && f.key === 'stock' && (
+                  <Input
+                    type="number"
+                    min="0"
+                    value={efvVal || '0'}
+                    onChange={(e) => onEditableFieldValueChange?.('stock', e.target.value)}
+                    placeholder="0"
+                  />
+                )}
+                {checked && f.key === 'prices' && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={efvVal || fieldValues['prices']?.replace(/[^\d.,]/g, '') || ''}
+                      onChange={(e) => onEditableFieldValueChange?.('prices', e.target.value)}
+                      placeholder="0.00"
+                    />
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">PLN</span>
+                  </div>
+                )}
+                {checked && f.key === 'locations' && (
+                  <Input
+                    type="text"
+                    value={efvVal || ''}
+                    onChange={(e) => onEditableFieldValueChange?.('locations', e.target.value)}
+                    placeholder="np. Regał A1"
+                  />
+                )}
+                {checked && f.key === 'manufacturer_id' && (
+                  manufacturers && manufacturers.length > 0 ? (
+                    <FilterableSelect
+                      value={efvVal || ''}
+                      onValueChange={(v) => onEditableFieldValueChange?.('manufacturer_id', v)}
+                      options={manufacturers.map((m) => ({ id: String(m.manufacturer_id), label: m.name }))}
+                      placeholder="-- wybierz producenta --"
+                    />
+                  ) : (
+                    <Input
+                      type="text"
+                      value={efvVal || fieldValues['manufacturer_id'] || ''}
+                      onChange={(e) => onEditableFieldValueChange?.('manufacturer_id', e.target.value)}
+                      placeholder="Producent"
+                    />
+                  )
+                )}
+                {checked && f.key === 'average_cost' && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={efvVal || ''}
+                      onChange={(e) => onEditableFieldValueChange?.('average_cost', e.target.value)}
+                      placeholder="0.00"
+                    />
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">PLN</span>
+                  </div>
+                )}
+              </FieldRow>
             );
           })}
         </div>
@@ -891,7 +1095,7 @@ function FieldsAndParametersStepInner({
               {/* Required parameters */}
               {requiredParams.length > 0 && (
                 <div className="rounded-lg bg-amber-50/40 dark:bg-amber-950/10 p-2 space-y-1">
-                  <div className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider px-3 pb-1">
+                  <div className="text-xs font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wider px-3 pb-1">
                     Wymagane ({requiredParams.length})
                   </div>
                   {requiredParams.map((param) => (

@@ -8,6 +8,7 @@ interface ProductListResponse {
   products: BLProductListItem[];
   totalCount: number;
   inventoryId: number;
+  cachedAt: string | null;
 }
 
 interface DetailData {
@@ -35,11 +36,16 @@ export interface DetailsProgress {
 const DETAIL_BATCH_SIZE = 100;
 
 export function useBLProductList() {
+  // Force refresh flag — set before refetch, reset after fetch completes
+  const forceRef = useRef(false);
+
   // Phase 1: Fast product list
   const listQuery = useQuery<ProductListResponse>({
     queryKey: ['bl-products-list'],
     queryFn: async () => {
-      const res = await fetch('/api/bl-products');
+      const url = forceRef.current ? '/api/bl-products?force=true' : '/api/bl-products';
+      forceRef.current = false;
+      const res = await fetch(url);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -183,6 +189,12 @@ export function useBLProductList() {
   }, [listQuery.data, detailsMap]);
 
   const inventoryId = listQuery.data?.inventoryId;
+  const cachedAt = listQuery.data?.cachedAt ?? null;
+
+  const forceRefresh = useCallback(() => {
+    forceRef.current = true;
+    listQuery.refetch();
+  }, [listQuery]);
 
   return {
     products,
@@ -192,6 +204,8 @@ export function useBLProductList() {
     isRefreshing,
     error: listQuery.error,
     refetch: listQuery.refetch,
+    forceRefresh,
+    cachedAt,
     detailsProgress,
   };
 }

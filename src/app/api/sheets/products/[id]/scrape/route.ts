@@ -51,11 +51,13 @@ export async function POST(
     // Translate
     let translatedData = result.data;
     let originalData = result.data;
+    let translationFailed = false;
     try {
       translatedData = await translateProduct(result.data, systemPrompt);
       originalData = result.data;
     } catch (translateErr) {
       console.warn('Translation failed for sheet product:', translateErr);
+      translationFailed = true;
       // Continue with untranslated data — not a fatal error
     }
 
@@ -70,6 +72,22 @@ export async function POST(
     if (product.szerokosc) attrs['szerokosc'] = product.szerokosc;
     if (product.wysokosc) attrs['wysokosc'] = product.wysokosc;
     if (product.lokalizacja) attrs['lokalizacja'] = product.lokalizacja;
+
+    // Inject extra columns from dynamic sheet reading into attributes
+    let parsedExtras: Record<string, string> = {};
+    if (product.extra_columns) {
+      try {
+        parsedExtras = JSON.parse(product.extra_columns);
+        for (const [key, value] of Object.entries(parsedExtras)) {
+          if (value && !attrs[key]) {
+            attrs[key] = value;
+          }
+        }
+      } catch {
+        // invalid JSON — skip
+      }
+    }
+
     translatedData.attributes = attrs;
 
     // Update status
@@ -77,6 +95,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
+      translationFailed,
       data: translatedData,
       originalData,
       sheetMeta: {
@@ -93,6 +112,7 @@ export async function POST(
         dlugosc: product.dlugosc ?? '',
         szerokosc: product.szerokosc ?? '',
         wysokosc: product.wysokosc ?? '',
+        ...parsedExtras,
       },
     });
   } catch (err) {

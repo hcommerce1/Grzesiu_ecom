@@ -52,10 +52,18 @@ const PRODUCT_TYPE_BADGE_VARIANT: Record<BLProductType, "secondary" | "default" 
   bundle: "warning",
 }
 
+function formatCacheAge(cachedAt: string): string {
+  const diff = Date.now() - new Date(cachedAt).getTime()
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return "przed chwilą"
+  if (minutes === 1) return "1 min temu"
+  return `${minutes} min temu`
+}
+
 // ─── Main Component ───
 
 export function EditProductsTab() {
-  const { products, inventoryId, isLoading, isFetching, isRefreshing, error, refetch, detailsProgress } = useBLProductList()
+  const { products, inventoryId, isLoading, isFetching, isRefreshing, error, forceRefresh, cachedAt, detailsProgress } = useBLProductList()
 
   const {
     selectedIds,
@@ -304,27 +312,30 @@ export function EditProductsTab() {
       })
   }, [currentBatchId, inventoryId, products])
 
-  const handleAdvanceBatch = useCallback(() => {
+  const handleAdvanceBatch = useCallback(async () => {
     fetchingRef.current = false
     setBatchProductData(null)
+    await fetch('/api/product-session', { method: 'DELETE' })
     advanceBatch()
   }, [advanceBatch])
 
-  const handleCancelBatch = useCallback(() => {
+  const handleCancelBatch = useCallback(async () => {
     fetchingRef.current = false
     setBatchProductData(null)
+    await fetch('/api/product-session', { method: 'DELETE' })
     cancelBatch()
   }, [cancelBatch])
 
-  const handleStartEdit = useCallback(() => {
+  const handleStartEdit = useCallback(async () => {
     const ids = [...selectedIds]
     if (ids.length === 0) return
+    await fetch('/api/product-session', { method: 'DELETE' })
     startBatch(ids)
   }, [selectedIds, startBatch])
 
   const handleRefresh = useCallback(() => {
-    refetch()
-  }, [refetch])
+    forceRefresh()
+  }, [forceRefresh])
 
   // inventoryId comes from the hook now (resolved by the list API)
 
@@ -409,6 +420,7 @@ export function EditProductsTab() {
 
         {/* Workflow panel */}
         <BaselinkerWorkflowPanel
+          key={currentBatchId}
           productData={batchProductData}
           editProductId={currentBatchId!}
           editProductType={currentListItem?.productType}
@@ -431,16 +443,23 @@ export function EditProductsTab() {
             Przeglądaj produkty z BaseLinker, filtruj i zaznacz do edycji.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleRefresh}
-          disabled={isFetching}
-          className="gap-1.5"
-        >
-          <RefreshCw className={cn("size-3.5", isFetching && "animate-spin")} />
-          Odśwież
-        </Button>
+        <div className="flex items-center gap-3">
+          {cachedAt && !isFetching && (
+            <span className="text-xs text-muted-foreground">
+              Cache · {formatCacheAge(cachedAt)}
+            </span>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isFetching}
+            className="gap-1.5"
+          >
+            <RefreshCw className={cn("size-3.5", isFetching && "animate-spin")} />
+            Odśwież
+          </Button>
+        </div>
       </div>
 
       {/* Error */}
@@ -469,7 +488,7 @@ export function EditProductsTab() {
         <div className="min-w-[180px]">
           <label className="text-xs font-medium text-muted-foreground mb-1 block">Producent</label>
           <FilterableSelect
-            value={filters.manufacturer}
+            value={filters.manufacturer || "__all__"}
             onValueChange={(v) => setFilter("manufacturer", v === "__all__" ? "" : v)}
             options={[{ id: "__all__", label: "Wszyscy" }, ...manufacturerOptions]}
             placeholder="Wszyscy"

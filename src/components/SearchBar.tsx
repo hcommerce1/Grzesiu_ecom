@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
-import { ArrowRight, Clipboard, Loader2, X } from "lucide-react"
+import { ArrowRight, Clipboard, Loader2, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -24,6 +24,7 @@ export function SearchBar({ onSubmit, isLoading }: SearchBarProps) {
     const urls = parseUrls(value)
     if (urls.length === 0) return
     onSubmit(urls)
+    if (isLoading) setValue("")
   }
 
   const handlePaste = async () => {
@@ -45,7 +46,7 @@ export function SearchBar({ onSubmit, isLoading }: SearchBarProps) {
     <div className="w-full space-y-3">
       <div
         className={cn(
-          "relative rounded-xl border bg-white shadow-sm transition-all",
+          "relative rounded-xl border bg-background shadow-sm transition-all",
           "border-input focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20"
         )}
       >
@@ -59,13 +60,14 @@ export function SearchBar({ onSubmit, isLoading }: SearchBarProps) {
               handleSubmit()
             }
           }}
-          rows={5}
-          disabled={isLoading}
+          rows={isLoading ? 3 : 5}
           className={cn(
             "w-full resize-none rounded-xl bg-transparent px-4 py-3 text-sm outline-none leading-relaxed",
-            "placeholder:text-muted-foreground disabled:opacity-60"
+            "placeholder:text-muted-foreground"
           )}
-          placeholder={"Wklej linki do produktów — jeden na linię:\nhttps://amazon.de/dp/B0...\nhttps://www.oninen.pl/listwy-zasilajace/...\nhttps://www.costway.pl/..."}
+          placeholder={isLoading
+            ? "Wklej dodatkowe linki i kliknij 'Dodaj do kolejki'..."
+            : "Wklej linki do produktów — jeden na linię:\nhttps://amazon.de/dp/B0...\nhttps://www.oninen.pl/listwy-zasilajace/...\nhttps://www.costway.pl/..."}
         />
         {value && (
           <button
@@ -83,7 +85,6 @@ export function SearchBar({ onSubmit, isLoading }: SearchBarProps) {
           size="sm"
           type="button"
           onClick={handlePaste}
-          disabled={isLoading}
           className="gap-1.5"
         >
           <Clipboard className="size-3.5" />
@@ -101,13 +102,13 @@ export function SearchBar({ onSubmit, isLoading }: SearchBarProps) {
         <Button
           type="button"
           onClick={handleSubmit}
-          disabled={isLoading || urlCount === 0}
+          disabled={urlCount === 0}
           className="gap-1.5 min-w-[120px]"
         >
           {isLoading ? (
             <>
-              <Loader2 className="size-4 animate-spin" />
-              Scrapuję...
+              <Plus className="size-4" />
+              Dodaj do kolejki
             </>
           ) : (
             <>
@@ -118,11 +119,6 @@ export function SearchBar({ onSubmit, isLoading }: SearchBarProps) {
         </Button>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Obsługiwane: Amazon, Oninen, Costway, DWD, Aosom, Woltu i inne sklepy.
-        Wklej wiele linków naraz — każdy przetworzy się osobno.{" "}
-        <kbd className="px-1 py-0.5 bg-muted rounded text-[10px]">Ctrl+Enter</kbd> aby scrapować.
-      </p>
     </div>
   )
 }

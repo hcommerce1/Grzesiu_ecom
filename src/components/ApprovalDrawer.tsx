@@ -48,9 +48,9 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
         <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
           <div>
             <h2 className="text-base font-semibold text-foreground">Zatwierdzenie wysyłki</h2>
-            <p className="text-xs text-muted mt-0.5">Sprawdź dane przed wysłaniem do BaseLinker</p>
+            <p className="text-sm text-muted-foreground mt-0.5">Sprawdź dane przed wysłaniem do BaseLinker</p>
           </div>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-card-hover text-muted hover:text-foreground transition-colors">
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-card-hover text-muted-foreground hover:text-foreground transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -99,7 +99,7 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
                   />
                 ))}
                 {images.length > 16 && (
-                  <div className="w-16 h-16 rounded-lg border border-border flex items-center justify-center text-xs text-muted">
+                  <div className="w-16 h-16 rounded-lg border border-border flex items-center justify-center text-xs text-muted-foreground">
                     +{images.length - 16}
                   </div>
                 )}
@@ -133,7 +133,7 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
           {sel['description'] !== false && session.data?.description && (
             <Section title="Opis">
               <div>
-                <div className={`text-sm text-muted ${descExpanded ? '' : 'line-clamp-3'}`}
+                <div className={`text-sm text-muted-foreground ${descExpanded ? '' : 'line-clamp-3'}`}
                   dangerouslySetInnerHTML={{ __html: session.data.description.substring(0, 500) + (session.data.description.length > 500 ? '…' : '') }}
                 />
                 {session.data.description.length > 200 && (
@@ -163,12 +163,12 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-border flex-shrink-0">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-muted hover:text-foreground transition-colors">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
             Anuluj
           </button>
           <div className="flex items-center gap-3">
             {!canSubmit && (
-              <span className="text-xs text-muted">Poczekaj 3s...</span>
+              <span className="text-xs text-muted-foreground">Poczekaj 3s...</span>
             )}
             <button
               onClick={handleSubmit}
@@ -193,9 +193,9 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
     <div className="bg-background/50 border border-border rounded-xl px-4 py-3 text-center">
       <div className="text-lg font-bold text-foreground">
         {value}
-        {sub && <span className="text-xs font-normal text-muted ml-1">{sub}</span>}
+        {sub && <span className="text-xs font-normal text-muted-foreground ml-1">{sub}</span>}
       </div>
-      <div className="text-xs text-muted mt-0.5">{label}</div>
+      <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
     </div>
   );
 }
@@ -204,7 +204,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <div className="bg-background/50 border border-border rounded-xl overflow-hidden">
       <div className="px-4 py-2.5 border-b border-border bg-card-hover/30">
-        <span className="text-xs font-semibold text-muted uppercase tracking-wider">{title}</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{title}</span>
       </div>
       <div className="px-4 py-3 space-y-2">{children}</div>
     </div>
@@ -215,8 +215,8 @@ function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
     <div className="flex items-start justify-between gap-4">
-      <span className="text-xs text-muted flex-shrink-0">{label}</span>
-      <span className="text-xs text-foreground text-right break-all">{value}</span>
+      <span className="text-xs text-muted-foreground flex-shrink-0">{label}</span>
+      <span className="text-sm text-foreground text-right break-all">{value}</span>
     </div>
   );
 }

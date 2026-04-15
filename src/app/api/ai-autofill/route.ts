@@ -73,16 +73,23 @@ export async function POST(req: Request) {
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '{}';
+    console.log('[AI auto-fill] Raw LLM response (first 500 chars):', content.slice(0, 500));
     const parsed = JSON.parse(content);
 
-    // LLM may return { results: [...] } or just [...]
-    const rawEntries: unknown[] = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed.results)
-        ? parsed.results
-        : Array.isArray(parsed.parameters)
-          ? parsed.parameters
-          : [];
+    // LLM may return [...] directly, or wrap in { results: [...] }, { parameters: [...] }, etc.
+    // With json_object mode, it's always an object — find the first array value.
+    let rawEntries: unknown[] = [];
+    if (Array.isArray(parsed)) {
+      rawEntries = parsed;
+    } else if (typeof parsed === 'object' && parsed !== null) {
+      for (const val of Object.values(parsed)) {
+        if (Array.isArray(val) && val.length > 0) {
+          rawEntries = val;
+          break;
+        }
+      }
+    }
+    console.log(`[AI auto-fill] Parsed ${rawEntries.length} entries from LLM response`);
 
     const result = validateAutoFillResponse(
       rawEntries,

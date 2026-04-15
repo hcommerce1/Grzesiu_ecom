@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import type { BLProductListItem } from './types';
 
 const DB_PATH = path.join(process.cwd(), 'tmp', 'sheets.db');
+const PRODUCT_LIST_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 
 let _db: Database.Database | null = null;
 
@@ -38,6 +40,7 @@ function getDb(): Database.Database {
       wysokosc            TEXT,
       zdjecie             TEXT,
       lokalizacja         TEXT,
+      extra_columns       TEXT,
 
       scrape_url          TEXT DEFAULT '',
       status              TEXT DEFAULT 'new'
@@ -48,6 +51,35 @@ function getDb(): Database.Database {
       last_synced         TEXT,
       created_at          TEXT DEFAULT (datetime('now')),
       updated_at          TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Migration: add extra_columns if missing (for existing DBs)
+  const cols = _db.pragma('table_info(sheet_products)') as { name: string }[];
+  if (!cols.some((c) => c.name === 'extra_columns')) {
+    _db.exec('ALTER TABLE sheet_products ADD COLUMN extra_columns TEXT');
+  }
+
+  // ─── Product list cache tables ───
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS bl_product_list_cache (
+      id              TEXT PRIMARY KEY,
+      name            TEXT,
+      ean             TEXT,
+      sku             TEXT,
+      quantity        INTEGER DEFAULT 0,
+      product_type    TEXT DEFAULT 'basic',
+      parent_id       TEXT,
+      is_bundle       INTEGER DEFAULT 0,
+      inventory_id    INTEGER NOT NULL
+    );
+  `);
+
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS cache_meta (
+      key       TEXT PRIMARY KEY,
+      value     TEXT,
+      timestamp TEXT NOT NULL
     );
   `);
 
@@ -79,6 +111,7 @@ export interface SheetProductRow {
   wysokosc: string | null;
   zdjecie: string | null;
   lokalizacja: string | null;
+  extra_columns: string | null;
   scrape_url: string;
   status: SheetProductStatus;
   bl_product_id: string | null;
@@ -139,6 +172,7 @@ export interface SheetRowInput {
   wysokosc?: string;
   zdjecie?: string;
   lokalizacja?: string;
+  extraColumns?: Record<string, string>;
 }
 
 /**
@@ -155,12 +189,12 @@ export function upsertFromSheet(rows: SheetRowInput[]): void {
       id, row_index, sku, nazwa, model, ean, rozmiar_gabaryt,
       stan_techniczny, opakowanie, czy_wiecej_kartonow, kolor,
       uwagi_krotkie, uwagi_magazynowe, paleta, waga, dlugosc,
-      szerokosc, wysokosc, zdjecie, lokalizacja, last_synced
+      szerokosc, wysokosc, zdjecie, lokalizacja, extra_columns, last_synced
     ) VALUES (
       @id, @row_index, @sku, @nazwa, @model, @ean, @rozmiar_gabaryt,
       @stan_techniczny, @opakowanie, @czy_wiecej_kartonow, @kolor,
       @uwagi_krotkie, @uwagi_magazynowe, @paleta, @waga, @dlugosc,
-      @szerokosc, @wysokosc, @zdjecie, @lokalizacja, @last_synced
+      @szerokosc, @wysokosc, @zdjecie, @lokalizacja, @extra_columns, @last_synced
     )
     ON CONFLICT(id) DO UPDATE SET
       row_index           = excluded.row_index,
@@ -182,6 +216,7 @@ export function upsertFromSheet(rows: SheetRowInput[]): void {
       wysokosc            = excluded.wysokosc,
       zdjecie             = excluded.zdjecie,
       lokalizacja         = excluded.lokalizacja,
+      extra_columns       = excluded.extra_columns,
       last_synced         = excluded.last_synced,
       updated_at          = datetime('now')
   `);
@@ -215,6 +250,9 @@ export function upsertFromSheet(rows: SheetRowInput[]): void {
         wysokosc: row.wysokosc ?? null,
         zdjecie: row.zdjecie ?? null,
         lokalizacja: row.lokalizacja ?? null,
+        extra_columns: row.extraColumns && Object.keys(row.extraColumns).length > 0
+          ? JSON.stringify(row.extraColumns)
+          : null,
         last_synced: now,
       });
     }
@@ -295,4 +333,115 @@ export function setProductStatus(
 
 export function markDone(id: string, blProductId: string): void {
   setProductStatus(id, 'done', { bl_product_id: blProductId, error_message: undefined });
+}
+
+export function resetAllProducts(): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE sheet_products SET
+      status = 'new',
+      scrape_url = '',
+      bl_product_id = NULL,
+      error_message = NULL,
+      category_id = NULL,
+      updated_at = datetime('now')
+  `).run();
+}
+
+export function resetProduct(id: string): SheetProductRow | undefined {
+  const db = getDb();
+  db.prepare(`
+    UPDATE sheet_products SET
+      status = 'new',
+      scrape_url = '',
+      bl_product_id = NULL,
+      error_message = NULL,
+      category_id = NULL,
+      updated_at = datetime('now')
+    WHERE id = @id
+  `).run({ id });
+  return getProductById(id);
+}
+
+// ─── BL Product List Cache ───
+
+export function getCachedProductList(inventoryId: number): { products: BLProductListItem[]; cachedAt: string } | null {
+  const db = getDb();
+  const meta = db.prepare(
+    `SELECT timestamp FROM cache_meta WHERE key = 'bl_product_list'`
+  ).get() as { timestamp: string } | undefined;
+
+  if (!meta) return null;
+
+  const age = Date.now() - new Date(meta.timestamp).getTime();
+  if (age > PRODUCT_LIST_CACHE_TTL_MS) return null;
+
+  const rows = db.prepare(
+    `SELECT * FROM bl_product_list_cache WHERE inventory_id = ?`
+  ).all(inventoryId) as Array<{
+    id: string; name: string; ean: string; sku: string;
+    quantity: number; product_type: string; parent_id: string | null;
+    is_bundle: number; inventory_id: number;
+  }>;
+
+  if (rows.length === 0) return null;
+
+  const products: BLProductListItem[] = rows.map((r) => ({
+    id: r.id,
+    name: r.name ?? '',
+    ean: r.ean ?? '',
+    sku: r.sku ?? '',
+    quantity: r.quantity ?? 0,
+    price: 0,
+    thumbnailUrl: null,
+    manufacturerId: 0,
+    manufacturerName: '',
+    productType: r.product_type as BLProductListItem['productType'],
+    parentId: r.parent_id ?? undefined,
+    isBundle: r.is_bundle === 1,
+  }));
+
+  return { products, cachedAt: meta.timestamp };
+}
+
+export function setCachedProductList(inventoryId: number, products: BLProductListItem[]): void {
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  const insert = db.prepare(`
+    INSERT OR REPLACE INTO bl_product_list_cache
+      (id, name, ean, sku, quantity, product_type, parent_id, is_bundle, inventory_id)
+    VALUES (@id, @name, @ean, @sku, @quantity, @product_type, @parent_id, @is_bundle, @inventory_id)
+  `);
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM bl_product_list_cache WHERE inventory_id = ?').run(inventoryId);
+
+    for (const p of products) {
+      insert.run({
+        id: p.id,
+        name: p.name,
+        ean: p.ean,
+        sku: p.sku,
+        quantity: p.quantity,
+        product_type: p.productType,
+        parent_id: p.parentId ?? null,
+        is_bundle: p.isBundle ? 1 : 0,
+        inventory_id: inventoryId,
+      });
+    }
+
+    db.prepare(`
+      INSERT OR REPLACE INTO cache_meta (key, value, timestamp)
+      VALUES ('bl_product_list', @value, @timestamp)
+    `).run({ value: String(inventoryId), timestamp: now });
+  });
+
+  tx();
+}
+
+export function invalidateProductListCache(): void {
+  const db = getDb();
+  db.prepare('DELETE FROM bl_product_list_cache').run();
+  db.prepare(`DELETE FROM cache_meta WHERE key = 'bl_product_list'`).run();
 }

@@ -56,7 +56,7 @@ export function PreviewContainer({
 
       {/* Preview frame */}
       <div className="rounded-xl border border-border overflow-hidden bg-white" style={{ maxWidth: 1200 }}>
-        <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: '70vh' }}>
+        <div className="overflow-x-auto">
           <div style={{ pointerEvents: 'none' }}>
             {activeTab === "allegro" && (
               <AllegroPreview

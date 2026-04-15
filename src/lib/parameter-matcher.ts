@@ -151,6 +151,99 @@ function matchDictionaryValue(
   return null;
 }
 
+// ─── Known SheetMeta fields (skip when looking for extra columns) ───
+
+const KNOWN_SHEET_FIELDS = new Set<string>([
+  'uwagiKrotkie', 'uwagiMagazynowe', 'zdjecie', 'paleta',
+  'stanTechniczny', 'kolor', 'opakowanie', 'rozmiarGabaryt',
+  'model', 'waga', 'dlugosc', 'szerokosc', 'wysokosc',
+]);
+
+// ─── Find parameter by column header name (for extra columns) ───
+
+/**
+ * Strict matching of a sheet header name to an Allegro parameter name.
+ * Only returns a match if normalized similarity is >= 0.7.
+ * Does NOT use COLUMN_PARAM_MAP — works purely from the raw header name.
+ */
+function findParameterByHeaderName(
+  headerName: string,
+  parameters: AllegroParameter[],
+  alreadyMatchedIds: Set<string>
+): AllegroParameter | null {
+  const normHeader = normalizePolish(headerName);
+  if (normHeader.length < 2) return null; // too short to match reliably
+
+  // 1. Exact normalized match (highest confidence)
+  const exact = parameters.find(
+    (p) => !alreadyMatchedIds.has(p.id) && normalizePolish(p.name) === normHeader
+  );
+  if (exact) return exact;
+
+  // 2. Contains match — parameter name contains header or vice versa
+  //    Only if both are at least 3 chars (avoid "a" matching "masa")
+  if (normHeader.length >= 3) {
+    const contains = parameters.find((p) => {
+      if (alreadyMatchedIds.has(p.id)) return false;
+      const normName = normalizePolish(p.name);
+      return normName.length >= 3 && (normName.includes(normHeader) || normHeader.includes(normName));
+    });
+    if (contains) return contains;
+  }
+
+  // 3. Levenshtein similarity >= 0.7
+  let bestMatch: AllegroParameter | null = null;
+  let bestSimilarity = 0;
+
+  for (const p of parameters) {
+    if (alreadyMatchedIds.has(p.id)) continue;
+    const normName = normalizePolish(p.name);
+    const maxLen = Math.max(normHeader.length, normName.length);
+    if (maxLen === 0) continue;
+    const dist = levenshtein(normHeader, normName);
+    const similarity = 1 - dist / maxLen;
+
+    if (similarity >= 0.7 && similarity > bestSimilarity) {
+      bestSimilarity = similarity;
+      bestMatch = p;
+    }
+  }
+
+  return bestMatch;
+}
+
+/**
+ * Safe dictionary match for extra columns — NO fuzzy matching on values.
+ * Only exact, normalized, and contains matches are allowed.
+ */
+function matchDictionaryValueStrict(
+  sheetValue: string,
+  options: { id: string; value: string }[]
+): { optionId: string; optionValue: string; confidence: number; matchType: ParameterMatchResult['matchType'] } | null {
+  if (!sheetValue || options.length === 0) return null;
+
+  // 1. Exact match
+  const exact = options.find((o) => o.value === sheetValue);
+  if (exact) return { optionId: exact.id, optionValue: exact.value, confidence: 1.0, matchType: 'exact' };
+
+  // 2. Normalized match
+  const normSheet = normalizePolish(sheetValue);
+  const normalized = options.find((o) => normalizePolish(o.value) === normSheet);
+  if (normalized) return { optionId: normalized.id, optionValue: normalized.value, confidence: 0.9, matchType: 'normalized' };
+
+  // 3. Contains match (one contains the other, min 3 chars)
+  if (normSheet.length >= 3) {
+    const contains = options.find((o) => {
+      const normOpt = normalizePolish(o.value);
+      return normOpt.length >= 3 && (normOpt.includes(normSheet) || normSheet.includes(normOpt));
+    });
+    if (contains) return { optionId: contains.id, optionValue: contains.value, confidence: 0.8, matchType: 'contains' };
+  }
+
+  // NO fuzzy match — too risky for dynamic columns
+  return null;
+}
+
 // ─── Main matching function ───
 
 export interface MatchParametersResult {
@@ -164,8 +257,11 @@ export function matchSheetToParameters(
 ): MatchParametersResult {
   const matchResults: ParameterMatchResult[] = [];
   const suggestedValues: Record<string, string | string[]> = {};
+  const matchedParamIds = new Set<string>();
 
-  const columnsToMatch: (keyof SheetMeta)[] = [
+  // ─── Phase 1: Known columns (existing behavior) ───
+
+  const columnsToMatch: string[] = [
     'stanTechniczny',
     'kolor',
     'opakowanie',
@@ -183,6 +279,8 @@ export function matchSheetToParameters(
 
     const param = findParameterForColumn(column, parameters);
     if (!param) continue;
+
+    matchedParamIds.add(param.id);
 
     // Dictionary type: match value to options
     if (param.type === 'dictionary' || param.dictionary?.length || (Array.isArray(param.options) && param.options.length)) {
@@ -264,6 +362,88 @@ export function matchSheetToParameters(
       });
 
       suggestedValues[param.id] = sheetValue;
+    }
+  }
+
+  // ─── Phase 2: Extra/dynamic columns (cautious matching) ───
+  // Only dictionary and numeric params get auto-suggested.
+  // String params are reported as low-confidence suggestions (no auto-fill).
+  // No fuzzy matching on dictionary values — only exact/normalized/contains.
+
+  for (const key of Object.keys(sheetMeta)) {
+    if (KNOWN_SHEET_FIELDS.has(key)) continue;
+
+    const val = sheetMeta[key];
+    if (!val || val.trim() === '') continue;
+
+    const param = findParameterByHeaderName(key, parameters, matchedParamIds);
+    if (!param) continue;
+
+    matchedParamIds.add(param.id);
+
+    // Dictionary type: strict matching (no fuzzy on values)
+    if (param.type === 'dictionary' || param.dictionary?.length || (Array.isArray(param.options) && param.options.length)) {
+      const opts = param.dictionary ?? (Array.isArray(param.options) ? param.options : null) ?? param.restrictions?.allowedValues ?? [];
+      const match = matchDictionaryValueStrict(val, opts);
+
+      if (match) {
+        matchResults.push({
+          parameterId: param.id,
+          parameterName: param.name,
+          sheetColumn: key,
+          sheetValue: val,
+          matchedOptionId: match.optionId,
+          matchedOptionValue: match.optionValue,
+          confidence: match.confidence,
+          matchType: match.matchType,
+        });
+
+        // Higher threshold for extra columns: 0.8 instead of 0.7
+        if (match.confidence >= 0.8) {
+          suggestedValues[param.id] = param.restrictions?.multipleChoices
+            ? [match.optionId]
+            : match.optionId;
+        }
+      }
+      continue;
+    }
+
+    // Numeric types: must be valid number, no unit conversion (units unknown)
+    if (param.type === 'integer' || param.type === 'float') {
+      const numericValue = parseFloat(val.replace(',', '.'));
+      if (isNaN(numericValue)) continue;
+
+      const valueStr = param.type === 'integer' ? String(Math.round(numericValue)) : String(numericValue);
+
+      matchResults.push({
+        parameterId: param.id,
+        parameterName: param.name,
+        sheetColumn: key,
+        sheetValue: val,
+        matchedOptionId: null,
+        matchedOptionValue: valueStr,
+        confidence: 0.85,
+        matchType: 'direct',
+      });
+
+      suggestedValues[param.id] = valueStr;
+      continue;
+    }
+
+    // String type: low-confidence suggestion only (no auto-fill)
+    if (param.type === 'string') {
+      matchResults.push({
+        parameterId: param.id,
+        parameterName: param.name,
+        sheetColumn: key,
+        sheetValue: val,
+        matchedOptionId: null,
+        matchedOptionValue: val,
+        confidence: 0.5,
+        matchType: 'direct',
+      });
+      // Deliberately NOT adding to suggestedValues — string params from
+      // dynamic columns are too risky for auto-fill, shown as suggestion only
     }
   }
 

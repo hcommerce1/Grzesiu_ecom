@@ -165,32 +165,31 @@ export function classifyChanges(
 }
 
 /**
- * Kompiluje sekcje do HTML z inline stylami (Allegro stripuje klasy CSS).
+ * Kompiluje sekcje do HTML z klasami CSS (BaseLinker template format).
  */
 export function compileSectionsToHtml(sections: DescriptionSection[]): string {
   const parts: string[] = [];
 
   for (const section of sections) {
     if (section.layout === 'images-only') {
-      parts.push(`<div style="display:flex;gap:16px;margin-bottom:32px;">
-${section.imageUrls.map(url => `  <img src="${url}" style="width:48%;height:auto;border-radius:8px;" alt="" />`).join('\n')}
-</div>`);
+      for (const url of section.imageUrls) {
+        parts.push(`<section class="section">    <div class="item item-12">        <section class="image-item">            <img src="${url}"/>        </section>    </div></section>`);
+      }
     } else {
       const imgUrl = section.imageUrls[0];
-      parts.push(`<div style="display:flex;gap:24px;margin-bottom:32px;align-items:flex-start;">
-  <div style="flex:0 0 45%;max-width:45%;">
-    <img src="${imgUrl}" style="width:100%;height:auto;border-radius:8px;" alt="" />
-  </div>
-  <div style="flex:1;">
-    ${section.heading ? `<h2 style="margin:0 0 12px 0;font-size:18px;font-weight:700;color:#222;">${section.heading}</h2>` : ''}
-    <div style="font-size:14px;line-height:1.6;color:#444;">${section.bodyHtml}</div>
-  </div>
-</div>`);
+      if (imgUrl) {
+        parts.push(`<section class="section">    <div class="item item-6">        <section class="image-item">            <img src="${imgUrl}"/>        </section>    </div>    <div class="item item-6">        <section class="text-item">            ${section.heading ? `<h2>${section.heading}</h2>` : ''}${section.bodyHtml}        </section>    </div></section>`);
+      }
     }
   }
 
-  return parts.join('\n');
+  return parts.join('');
 }
+
+/**
+ * CSS do podglądu opisu w preview (klasy z BaseLinker template).
+ */
+export const DESCRIPTION_PREVIEW_CSS = `<style>.section{display:flex;gap:24px;margin-bottom:32px;align-items:flex-start}.item{box-sizing:border-box}.item-6{flex:0 0 50%;max-width:50%}.item-12{flex:0 0 100%;max-width:100%}.image-item img{width:100%;height:auto;border-radius:8px}.text-item h2{margin:0 0 12px;font-size:18px;font-weight:700;color:#222}.text-item{font-size:14px;line-height:1.6;color:#444}</style>`;
 
 /**
  * Buduje snapshot danych wejsciowych opisu z aktualnego stanu sesji.
@@ -223,6 +222,7 @@ export function interpolatePrompt(
     parameters: string;
     image_count: number;
     image_descriptions: string;
+    uwagi: string;
   },
 ): string {
   return template
@@ -231,5 +231,6 @@ export function interpolatePrompt(
     .replace(/\{category\}/g, vars.category)
     .replace(/\{parameters\}/g, vars.parameters)
     .replace(/\{image_count\}/g, String(vars.image_count))
-    .replace(/\{image_descriptions\}/g, vars.image_descriptions);
+    .replace(/\{image_descriptions\}/g, vars.image_descriptions)
+    .replace(/\{uwagi\}/g, vars.uwagi);
 }

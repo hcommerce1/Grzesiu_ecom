@@ -36,6 +36,10 @@ export function clearSession(): void {
 
 export function buildBaselinkerPayload(session: ProductSession): Record<string, unknown> {
   const { data, fieldSelection, mode, inventoryId, defaultWarehouse } = session;
+  const efv = session.editableFieldValues ?? {};
+  const warehouseKey = defaultWarehouse
+    ? (String(defaultWarehouse).startsWith('bl_') ? String(defaultWarehouse) : `bl_${defaultWarehouse}`)
+    : undefined;
 
   const payload: Record<string, unknown> = {
     inventory_id: inventoryId,
@@ -59,7 +63,14 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
   }
 
   if (fieldSelection?.features && session.filledParameters) {
-    tf['features'] = JSON.stringify(session.filledParameters);
+    const filled = Object.fromEntries(
+      Object.entries(session.filledParameters).filter(([, v]) =>
+        Array.isArray(v) ? v.length > 0 : v !== '' && v != null
+      )
+    );
+    if (Object.keys(filled).length > 0) {
+      tf['features'] = JSON.stringify(filled);
+    }
   }
 
   // Extra fields
@@ -70,8 +81,8 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     }
   });
 
-  if (fieldSelection?.sku && data.sku) payload['sku'] = data.sku;
-  if (fieldSelection?.ean && data.ean) payload['ean'] = data.ean;
+  if (fieldSelection?.sku) payload['sku'] = efv['sku'] || data.sku || '';
+  if (fieldSelection?.ean) payload['ean'] = efv['ean'] || data.ean || '';
 
   if (fieldSelection?.images) {
     // Użyj posortowanych, nieusunietych zdjęć z imagesMeta jeśli dostępne
@@ -91,35 +102,56 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     }
   }
 
-  // Weight (kg)
+  // Weight (kg) — user override > scraped data
   if (fieldSelection?.weight) {
-    const w = data.attributes?.['waga'] || data.attributes?.['Waga'] || data.attributes?.['Weight'];
+    const w = efv['weight'] || data.attributes?.['waga'] || data.attributes?.['Waga'] || data.attributes?.['Weight'];
     if (w) {
       const parsed = parseFloat(String(w).replace(',', '.'));
       if (!isNaN(parsed)) payload['weight'] = parsed;
     }
   }
 
-  // Dimensions (cm)
+  // Dimensions (cm) — user override > scraped data
   if (fieldSelection?.dimensions) {
-    const h = data.attributes?.['wysokosc'] || data.attributes?.['Wysokosc'] || data.attributes?.['Height'];
-    const w = data.attributes?.['szerokosc'] || data.attributes?.['Szerokosc'] || data.attributes?.['Width'];
-    const l = data.attributes?.['dlugosc'] || data.attributes?.['Dlugosc'] || data.attributes?.['Length'];
+    const h = efv['height'] || data.attributes?.['wysokosc'] || data.attributes?.['Wysokosc'] || data.attributes?.['Height'];
+    const w = efv['width'] || data.attributes?.['szerokosc'] || data.attributes?.['Szerokosc'] || data.attributes?.['Width'];
+    const l = efv['length'] || data.attributes?.['dlugosc'] || data.attributes?.['Dlugosc'] || data.attributes?.['Length'];
     if (h) { const v = parseFloat(String(h).replace(',', '.')); if (!isNaN(v)) payload['height'] = v; }
     if (w) { const v = parseFloat(String(w).replace(',', '.')); if (!isNaN(v)) payload['width'] = v; }
     if (l) { const v = parseFloat(String(l).replace(',', '.')); if (!isNaN(v)) payload['length'] = v; }
   }
 
-  // Location
+  // Location — user override > scraped data
   if (fieldSelection?.locations) {
-    const loc = data.attributes?.['lokalizacja'] || data.attributes?.['Lokalizacja'];
-    if (loc && defaultWarehouse) {
-      payload['locations'] = { [defaultWarehouse]: loc };
+    const loc = efv['locations'] || data.attributes?.['lokalizacja'] || data.attributes?.['Lokalizacja'];
+    if (loc && warehouseKey) {
+      payload['locations'] = { [warehouseKey]: loc };
     }
   }
 
-  if (fieldSelection?.stock !== false && defaultWarehouse) {
-    payload['stock'] = { [defaultWarehouse]: 0 };
+  // Stock — user override > default 0
+  if (fieldSelection?.stock !== false && warehouseKey) {
+    const stockVal = efv['stock'] ? parseInt(efv['stock'], 10) : 0;
+    payload['stock'] = { [warehouseKey]: isNaN(stockVal) ? 0 : stockVal };
+  }
+
+  // Prices — user override
+  if (fieldSelection?.prices && warehouseKey) {
+    const priceVal = efv['prices'] ? parseFloat(efv['prices'].replace(',', '.')) : null;
+    if (priceVal && !isNaN(priceVal)) {
+      payload['prices'] = { [warehouseKey]: priceVal };
+    }
+  }
+
+  // Manufacturer
+  if (fieldSelection?.manufacturer_id && efv['manufacturer_id']) {
+    payload['manufacturer_id'] = parseInt(efv['manufacturer_id'], 10) || 0;
+  }
+
+  // Average cost
+  if (fieldSelection?.average_cost && efv['average_cost']) {
+    const cost = parseFloat(efv['average_cost'].replace(',', '.'));
+    if (!isNaN(cost)) payload['average_cost'] = cost;
   }
 
   if (mode === 'edit' && session.product_id) {
