@@ -34,7 +34,10 @@ function firstImageUrl(zdjecie: string | null | undefined): string | null {
   if (!zdjecie) return null;
   // Support comma-separated, semicolon-separated, or newline-separated URLs
   const first = zdjecie.split(/[,;\n]/)[0].trim();
-  return first.startsWith("http") ? first : null;
+  // Fallback: extract URL from =IMAGE("url") formula (Google Sheets formula syntax)
+  const imageMatch = first.match(/=IMAGE\("([^"]+)"/i);
+  const url = imageMatch ? imageMatch[1] : first;
+  return url.startsWith("http") ? url : null;
 }
 
 function Thumbnail({ src }: { src: string | null }) {
@@ -436,6 +439,13 @@ export function GoogleSheetsTab() {
     const ids = inProgressProducts.map((p) => p.id);
     if (ids.length === 0) return;
 
+    // For a single in-progress product, try to use cached scraped data
+    if (ids.length === 1) {
+      await resumeSingle(ids[0]);
+      return;
+    }
+
+    // For multiple: reset all to queued and re-scrape (no other option for batch)
     for (const id of ids) {
       await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
         method: "PATCH",
@@ -541,6 +551,41 @@ export function GoogleSheetsTab() {
   // ─── Resume single in-progress product ───
 
   async function resumeSingle(id: string) {
+    // Try cached scraped data first — avoid re-scraping if already done
+    try {
+      const res = await fetch(`/api/sheets/products/${encodeURIComponent(id)}/scrape`);
+      const cached = await res.json();
+
+      if (cached.cached) {
+        // Restore per-product workflow session to global slot so the panel picks it up on mount
+        if (cached.workflowSession) {
+          try {
+            await fetch("/api/product-session", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cached.workflowSession),
+            });
+          } catch { /* non-fatal */ }
+        }
+
+        abortRef.current = false;
+        setSelected(new Set());
+        setActive((prev) => prev.map((p) => (p.id === id ? { ...p, status: "in_progress" as const } : p)));
+        setBatch({
+          queue: [id],
+          currentIndex: 0,
+          currentId: id,
+          currentProductData: cached.data,
+          currentSheetMeta: cached.sheetMeta,
+          translationFailed: cached.translationFailed ?? false,
+        });
+        return;
+      }
+    } catch {
+      // fallthrough to re-scrape
+    }
+
+    // No cache — re-scrape
     await fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -549,6 +594,7 @@ export function GoogleSheetsTab() {
     setActive((prev) => prev.map((p) => (p.id === id ? { ...p, status: "queued" as const } : p)));
 
     abortRef.current = false;
+    setSelected(new Set());
     setBatch({ queue: [id], currentIndex: 0, currentProductData: null, currentSheetMeta: null, currentId: null });
     processBatchItem([id], 0);
   }
@@ -1046,21 +1092,32 @@ export function GoogleSheetsTab() {
                         </Badge>
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="gap-1 text-xs h-7"
-                          onClick={() => {
-                            window.dispatchEvent(
-                              new CustomEvent("sheets:edit-product", {
-                                detail: { productId: product.bl_product_id },
-                              })
-                            );
-                          }}
-                        >
-                          <Edit3 className="size-3" />
-                          Edytuj
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="gap-1 text-xs h-7"
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent("sheets:edit-product", {
+                                  detail: { productId: product.bl_product_id },
+                                })
+                              );
+                            }}
+                          >
+                            <Edit3 className="size-3" />
+                            Edytuj
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="gap-1 text-xs h-7 text-destructive hover:text-destructive"
+                            onClick={() => resetSingleProduct(product.id)}
+                          >
+                            <RotateCcw className="size-3" />
+                            Cofnij
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

@@ -29,7 +29,7 @@ interface ClaudeChatProps {
   onSectionImageReorder?: (sectionId: string, imageUrls: string[]) => void
   onSectionRemove?: (sectionId: string) => void
   onSectionAdd?: (section: DescriptionSection, afterSectionId?: string) => void
-  onSectionLayoutChange?: (sectionId: string, layout: 'image-text' | 'images-only') => void
+  onSectionLayoutChange?: (sectionId: string, layout: 'image-text' | 'images-only' | 'text-only') => void
   onSectionsReorder?: (sectionIds: string[]) => void
   onSectionImageAdd?: (sectionId: string, imageUrl: string) => void
   onSectionImageRemove?: (sectionId: string, imageUrl: string) => void
@@ -42,6 +42,17 @@ interface ClaudeChatProps {
   targetedSections?: TargetableSection[]
   onRemoveTargetedSection?: (id: string) => void
   onClearTargets?: () => void
+  /** Stan techniczny produktu (N/PW/PZ/U) — tylko Sheets */
+  stanTechniczny?: string
+  /** Uwagi magazynowe — tylko Sheets */
+  uwagi?: string
+  /** Pełny kontekst produktu dla AI */
+  originalDescription?: string
+  price?: string
+  currency?: string
+  ean?: string
+  sku?: string
+  productUrl?: string
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -86,6 +97,14 @@ export function ClaudeChat({
   targetedSections,
   onRemoveTargetedSection,
   onClearTargets,
+  stanTechniczny,
+  uwagi,
+  originalDescription,
+  price,
+  currency,
+  ean,
+  sku,
+  productUrl,
 }: ClaudeChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -350,6 +369,14 @@ export function ClaudeChat({
             imagesMeta: (imagesMeta || []).filter(i => !i.removed),
             allegroParameters,
             conversationHistory: history,
+            stanTechniczny,
+            uwagi,
+            originalDescription,
+            price,
+            currency,
+            ean,
+            sku,
+            productUrl,
           }),
         })
 

@@ -42,15 +42,10 @@ export function isIconOrLogo(url: string): boolean {
 }
 
 // ─── Configuration ───
-const SCRAPER_MODE = process.env.SCRAPER_MODE || 'unblocker';
+const SCRAPER_MODE = process.env.SCRAPER_MODE || 'decodo';
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY || '';
 const DECODO_API_USERNAME = process.env.DECODO_API_USERNAME || '';
 const DECODO_API_PASSWORD = process.env.DECODO_API_PASSWORD || '';
-const NAVIGATION_TIMEOUT = 60000;
-const SELECTOR_TIMEOUT = 15000;
-
-// ─── Proxy Config ───
-type ProxyConfig = { server: string; username: string; password: string };
 
 // ─── Access-Denied Detection ───
 const ACCESS_DENIED_PATTERNS = [
@@ -120,38 +115,43 @@ export async function scrapeProduct(url: string): Promise<ScrapeResponse> {
     }
 
     try {
-        // 1. Decodo Web Scraping API — najszybszy, omija anty-bot
-        if (SCRAPER_MODE === 'decodo' && DECODO_API_USERNAME && DECODO_API_PASSWORD) {
-            console.log('[Scraper] Tryb DECODO Scraping API');
-            const result = await scrapeWithDecodoAPI(url);
-            if (result.success && result.data) await enrichAmazonEan(result.data, url);
-            return result;
-        }
-
-        // 2. ScrapingBee unblocker
-        if (SCRAPER_MODE === 'unblocker' && SCRAPINGBEE_API_KEY) {
-            const premiumResult = await scrapeWithPlaywright(url, {
-                server: 'http://proxy.scrapingbee.com:8886',
-                username: SCRAPINGBEE_API_KEY,
-                password: 'render_js=False&premium_proxy=True',
-            });
-            if (!premiumResult.success && (premiumResult as { errorType: string }).errorType === 'ACCESS_DENIED') {
-                const stealthResult = await scrapeWithPlaywright(url, {
-                    server: 'http://proxy.scrapingbee.com:8886',
-                    username: SCRAPINGBEE_API_KEY,
-                    password: 'render_js=False&stealth_proxy=True',
-                });
-                if (stealthResult.success && stealthResult.data) await enrichAmazonEan(stealthResult.data, url);
-                return stealthResult;
+        if (SCRAPER_MODE === 'decodo') {
+            // Primary: Decodo
+            if (DECODO_API_USERNAME && DECODO_API_PASSWORD) {
+                console.log('[Scraper] Tryb DECODO Scraping API');
+                const result = await scrapeWithDecodoAPI(url);
+                if (result.success && result.data) {
+                    await enrichAmazonEan(result.data, url);
+                    return result;
+                }
+                console.warn('[Scraper] Decodo failed, próba ScrapingBee...');
             }
-            if (premiumResult.success && premiumResult.data) await enrichAmazonEan(premiumResult.data, url);
-            return premiumResult;
+            // Fallback: ScrapingBee
+            if (SCRAPINGBEE_API_KEY) {
+                const result = await scrapeWithScrapingBeeRest(url);
+                if (result.success && result.data) await enrichAmazonEan(result.data, url);
+                return result;
+            }
+            return { success: false, error: 'Brak działającego scrapera (Decodo i ScrapingBee niedostępne)', errorType: 'UNKNOWN' };
+        } else {
+            // Primary: ScrapingBee
+            if (SCRAPINGBEE_API_KEY) {
+                console.log('[Scraper] Tryb ScrapingBee API');
+                const result = await scrapeWithScrapingBeeRest(url);
+                if (result.success && result.data) {
+                    await enrichAmazonEan(result.data, url);
+                    return result;
+                }
+                console.warn('[Scraper] ScrapingBee failed, próba Decodo...');
+            }
+            // Fallback: Decodo
+            if (DECODO_API_USERNAME && DECODO_API_PASSWORD) {
+                const result = await scrapeWithDecodoAPI(url);
+                if (result.success && result.data) await enrichAmazonEan(result.data, url);
+                return result;
+            }
+            return { success: false, error: 'Brak działającego scrapera (ScrapingBee i Decodo niedostępne)', errorType: 'UNKNOWN' };
         }
-
-        // 3. Plain Playwright (no proxy)
-        const result = await scrapeWithPlaywright(url);
-        if (result.success && result.data) await enrichAmazonEan(result.data, url);
-        return result;
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unknown error occurred';
         console.error('[Scraper] Error:', message);
@@ -352,6 +352,34 @@ async function scrapeWithDecodoAPI(url: string): Promise<ScrapeResponse> {
         result = await scrapeDecodoSingleAttempt(url);
     }
     return result;
+}
+
+// ─── ScrapingBee REST API Mode ───
+async function scrapeWithScrapingBeeRest(url: string): Promise<ScrapeResponse> {
+    console.log(`[Scraper] ScrapingBee REST: ${url}`);
+    try {
+        const apiUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_API_KEY}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&country_code=pl`;
+        const res = await fetch(apiUrl, { signal: AbortSignal.timeout(90000) });
+        if (!res.ok) {
+            return { success: false, error: `ScrapingBee HTTP ${res.status}`, errorType: 'UNKNOWN' };
+        }
+        const html = await res.text();
+        if (html.length < MIN_HTML_LENGTH) {
+            return { success: false, error: `ScrapingBee: za mało danych (${html.length} znaków)`, errorType: 'UNKNOWN' };
+        }
+        const isAllegro = url.includes('allegro.pl');
+        const isBanned = isAllegro ? detectAllegroBan(html, 200) : detectAccessDenied(html);
+        if (isBanned) {
+            return { success: false, error: 'ScrapingBee: Access denied — strona wykryła automatyczny dostęp', errorType: 'ACCESS_DENIED' };
+        }
+        const productData = await extractFromHTML(html, url);
+        console.log(`[Scraper] ScrapingBee OK: title="${productData.title}" | images=${productData.images?.length ?? 0}`);
+        return { success: true, data: productData };
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown';
+        const isTimeout = msg.includes('timeout') || msg.includes('abort');
+        return { success: false, error: `ScrapingBee: ${msg}`, errorType: isTimeout ? 'TIMEOUT' : 'UNKNOWN' };
+    }
 }
 
 // ─── Extract Amazon product data from Decodo parsed JSON ───
@@ -608,210 +636,52 @@ function extractAllegroFromDOM(document: Document, url: string, window: any): Pr
     return { title, price, currency, sku, images, description, attributes, ean, url };
 }
 
-// ─── Playwright Mode (with optional proxy) ───
-async function scrapeWithPlaywright(url: string, proxy?: ProxyConfig): Promise<ScrapeResponse> {
-    console.log(`[Scraper] Playwright: ${url} | proxy: ${proxy?.server ?? 'brak'}`);
-    const { chromium } = require('playwright-extra');
-    const stealth = require('puppeteer-extra-plugin-stealth')();
-
-    chromium.use(stealth);
-
-    console.log('[Scraper] Uruchamianie przeglądarki...');
-    const browser = await chromium.launch({
-        headless: true,
-        ...(proxy ? { proxy } : {}),
-    });
-    console.log('[Scraper] Przeglądarka uruchomiona, nawigacja...');
-
-    try {
-        const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            ...(proxy ? { ignoreHTTPSErrors: true } : {}),
-        });
-        const page = await context.newPage();
-
-        await page.goto(url, {
-            waitUntil: 'domcontentloaded',
-            timeout: NAVIGATION_TIMEOUT,
-        });
-
-        await waitForContent(page);
-        await autoScroll(page);
-
-        // Allegro: kliknij miniaturki galerii żeby załadować pełne zdjęcia
-        if (url.includes('allegro.pl')) {
-            await clickAllegroGallery(page);
-        }
-
-        const bodyHtml = await page.content();
-        if (detectAccessDenied(bodyHtml)) {
-            return {
-                success: false,
-                error: 'Access denied by the target website. The site detected automated access.',
-                errorType: 'ACCESS_DENIED',
-            };
-        }
-
-        const pageTitle = await page.title();
-        console.log(`[Scraper] Tytuł strony: "${pageTitle}" | HTML: ${bodyHtml.length} znaków`);
-
-        const extractor = getExtractorForUrl(url);
-        const productData = await extractor(page, url);
-        console.log(`[Scraper] Wynik: title="${productData.title}" | images=${productData.images?.length ?? 0} | attrs=${Object.keys(productData.attributes ?? {}).length}`);
-        return { success: true, data: productData };
-    } finally {
-        await browser.close();
-    }
-}
-
-// ─── Wait for Content (Self-Healing) ───
-async function waitForContent(page: import('playwright').Page): Promise<void> {
-    const primarySelectors = [
-        '#productTitle',
-        '#title',
-        '[data-feature-name="title"]',
-        '[data-box-name]',
-        'h1[class*="offer"]',
-        'h1[class*="product"]',
-        'h1[class*="title"]',
-        'h1.product-title',
-        'h1',
-    ];
-
-    for (const selector of primarySelectors) {
-        try {
-            await page.waitForSelector(selector, { timeout: SELECTOR_TIMEOUT });
-            return;
-        } catch {
-            // Try next selector
-        }
-    }
-
-    await page.waitForTimeout(3000);
-}
-
-// ─── Allegro gallery interaction — click thumbnails to load all images ───
-async function clickAllegroGallery(page: import('playwright').Page): Promise<void> {
-    try {
-        const thumbSelectors = [
-            '[data-box-name*="allery"] img',
-            '[data-box-name*="image"] img',
-            '[class*="gallery"] [class*="thumb"] img',
-            '[class*="gallery-nav"] img',
-            '[class*="swiper-slide"] img',
-        ];
-        for (const sel of thumbSelectors) {
-            const thumbs = await page.$$(sel);
-            if (thumbs.length > 1) {
-                for (const thumb of thumbs.slice(0, 15)) {
-                    try {
-                        await thumb.click();
-                        await page.waitForTimeout(300);
-                    } catch { /* skip */ }
-                }
-                await page.waitForTimeout(1000);
-                return;
-            }
-        }
-        // Fallback: kliknij strzałkę "next" kilka razy
-        const nextSelectors = [
-            '[class*="gallery"] [class*="next"]',
-            '[class*="swiper-button-next"]',
-            'button[aria-label*="next" i]',
-            'button[aria-label*="następn" i]',
-        ];
-        for (const sel of nextSelectors) {
-            const btn = await page.$(sel);
-            if (btn) {
-                for (let i = 0; i < 10; i++) {
-                    try {
-                        await btn.click();
-                        await page.waitForTimeout(400);
-                    } catch { break; }
-                }
-                await page.waitForTimeout(1000);
-                return;
-            }
-        }
-    } catch { /* gallery interaction failed — not critical */ }
-}
-
-// ─── fetchPageHtml — pobiera surowy HTML strony (do listing-scrapera) ───
+// ─── fetchPageHtml — pobiera surowy HTML strony ───
 export async function fetchPageHtml(url: string): Promise<string> {
-    if (SCRAPER_MODE === 'decodo' && DECODO_API_USERNAME && DECODO_API_PASSWORD) {
+    const mode = SCRAPER_MODE;
+    const hasDecodo = !!(DECODO_API_USERNAME && DECODO_API_PASSWORD);
+    const hasSBee = !!SCRAPINGBEE_API_KEY;
+
+    const tryDecodo = async (): Promise<string> => {
         const credentials = Buffer.from(`${DECODO_API_USERNAME}:${DECODO_API_PASSWORD}`).toString('base64');
-        const body = {
-            target: 'universal',
-            url,
-            headless: 'html',
-            locale: 'pl-PL',
-            geo: 'Poland',
-        };
-        try {
-            const res = await fetch('https://scraper-api.decodo.com/v2/scrape', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Basic ${credentials}` },
-                body: JSON.stringify(body),
-                signal: AbortSignal.timeout(60000),
-            });
-            if (!res.ok) throw new Error(`Decodo HTTP ${res.status}`);
-            const json = await res.json();
-            const results = json.results;
-            const first = Array.isArray(results) && results.length > 0 ? results[0] : json;
-            const html = typeof first.content === 'string' ? first.content : (typeof json.content === 'string' ? json.content : (json.body ?? ''));
-            if (html.length > 100) return html;
-        } catch (err) {
-            console.warn('[fetchPageHtml] Decodo error:', err instanceof Error ? err.message : err);
-        }
-    }
-
-    if (SCRAPER_MODE === 'unblocker' && SCRAPINGBEE_API_KEY) {
-        try {
-            const proxyUrl = `http://${SCRAPINGBEE_API_KEY}:render_js=False&premium_proxy=True@proxy.scrapingbee.com:8886`;
-            const res = await fetch(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0' },
-                // @ts-expect-error node-fetch proxy
-                agent: proxyUrl,
-                signal: AbortSignal.timeout(30000),
-            });
-            if (res.ok) return await res.text();
-        } catch (err) {
-            console.warn('[fetchPageHtml] ScrapingBee error:', err instanceof Error ? err.message : err);
-        }
-    }
-
-    // Plain fetch fallback
-    const res = await fetch(url, {
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'pl-PL,pl;q=0.9',
-        },
-        signal: AbortSignal.timeout(30000),
-    });
-    return await res.text();
-}
-
-// ─── Auto-scroll to trigger lazy-loaded content ───
-async function autoScroll(page: import('playwright').Page): Promise<void> {
-    await page.evaluate(async () => {
-        await new Promise<void>((resolve) => {
-            let totalHeight = 0;
-            const distance = 500;
-            const maxScrolls = 20;
-            let scrollCount = 0;
-            const timer = setInterval(() => {
-                const scrollHeight = document.body.scrollHeight;
-                window.scrollBy(0, distance);
-                totalHeight += distance;
-                scrollCount++;
-                if (totalHeight >= scrollHeight || scrollCount >= maxScrolls) {
-                    clearInterval(timer);
-                    window.scrollTo(0, 0);
-                    resolve();
-                }
-            }, 150);
+        const body = { target: 'universal', url, headless: 'html', locale: 'pl-PL', geo: 'Poland' };
+        const res = await fetch('https://scraper-api.decodo.com/v2/scrape', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Basic ${credentials}` },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(60000),
         });
-    });
-    await page.waitForTimeout(2000);
+        if (!res.ok) throw new Error(`Decodo HTTP ${res.status}`);
+        const json = await res.json();
+        const results = json.results;
+        const first = Array.isArray(results) && results.length > 0 ? results[0] : json;
+        const html = typeof first.content === 'string' ? first.content : (typeof json.content === 'string' ? json.content : (json.body ?? ''));
+        if (html.length > 100) return html;
+        throw new Error(`Decodo: za mało HTML (${html.length} znaków)`);
+    };
+
+    const tryScrapingBee = async (): Promise<string> => {
+        const apiUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_API_KEY}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&country_code=pl`;
+        const res = await fetch(apiUrl, { signal: AbortSignal.timeout(60000) });
+        if (!res.ok) throw new Error(`ScrapingBee HTTP ${res.status}`);
+        return await res.text();
+    };
+
+    if (mode === 'decodo') {
+        if (hasDecodo) {
+            try { return await tryDecodo(); } catch (err) { console.warn('[fetchPageHtml] Decodo error:', err instanceof Error ? err.message : err); }
+        }
+        if (hasSBee) {
+            try { return await tryScrapingBee(); } catch (err) { console.warn('[fetchPageHtml] ScrapingBee error:', err instanceof Error ? err.message : err); }
+        }
+    } else {
+        if (hasSBee) {
+            try { return await tryScrapingBee(); } catch (err) { console.warn('[fetchPageHtml] ScrapingBee error:', err instanceof Error ? err.message : err); }
+        }
+        if (hasDecodo) {
+            try { return await tryDecodo(); } catch (err) { console.warn('[fetchPageHtml] Decodo error:', err instanceof Error ? err.message : err); }
+        }
+    }
+
+    throw new Error(`fetchPageHtml: brak działającego scrapera dla ${url}`);
 }

@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 import { buildAutoFillPrompt, validateAutoFillResponse } from '@/lib/ai-autofill';
 import type { AllegroParameter, ProductData } from '@/lib/types';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-opus-4-6';
 
 interface AutoFillRequest {
   productData: ProductData;
   parameters: AllegroParameter[];
   alreadyFilled?: Record<string, string | string[]>;
+  imageMeta?: Array<{ url: string; aiDescription?: string; features?: string[] }>;
 }
 
 export async function POST(req: Request) {
@@ -22,9 +23,9 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!OPENAI_API_KEY) {
+    if (!ANTHROPIC_API_KEY) {
       return NextResponse.json(
-        { error: 'OPENAI_API_KEY nie jest ustawiony' },
+        { error: 'ANTHROPIC_API_KEY nie jest ustawiony' },
         { status: 500 },
       );
     }
@@ -33,6 +34,7 @@ export async function POST(req: Request) {
       body.productData,
       body.parameters,
       body.alreadyFilled ?? {},
+      body.imageMeta,
     );
 
     // Nothing to fill
@@ -44,40 +46,45 @@ export async function POST(req: Request) {
       });
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    console.log(`[AI auto-fill] Using model: ${AUTOFILL_MODEL}, params: ${parameterIds.length}, images: ${body.imageMeta?.length ?? 0}`);
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: LLM_MODEL,
+        model: AUTOFILL_MODEL,
+        max_tokens: 4000,
+        system: systemPrompt,
         messages: [
-          { role: 'system', content: systemPrompt },
           {
             role: 'user',
-            content:
-              'Przeanalizuj dane produktu i dopasuj wartości do parametrów. Zwróć tablicę JSON.',
+            content: 'Przeanalizuj dane produktu i dopasuj wartości do parametrów Allegro. Zwróć JSON z tablicą results.',
           },
         ],
-        response_format: { type: 'json_object' },
-        temperature: 0.1,
-        max_tokens: 4000,
       }),
     });
 
     if (!response.ok) {
       const err = await response.text();
-      throw new Error(`LLM API error (${response.status}): ${err}`);
+      throw new Error(`Anthropic API error (${response.status}): ${err}`);
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '{}';
-    console.log('[AI auto-fill] Raw LLM response (first 500 chars):', content.slice(0, 500));
-    const parsed = JSON.parse(content);
+    // Anthropic returns content as array: data.content[0].text
+    const content = data.content?.[0]?.text || '{}';
+    console.log('[AI auto-fill] Raw Claude response (first 500 chars):', content.slice(0, 500));
 
-    // LLM may return [...] directly, or wrap in { results: [...] }, { parameters: [...] }, etc.
-    // With json_object mode, it's always an object — find the first array value.
+    // Extract JSON — Claude may wrap in markdown code fences
+    let jsonStr = content;
+    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonMatch) jsonStr = jsonMatch[1].trim();
+
+    const parsed = JSON.parse(jsonStr);
+
     let rawEntries: unknown[] = [];
     if (Array.isArray(parsed)) {
       rawEntries = parsed;
@@ -89,7 +96,7 @@ export async function POST(req: Request) {
         }
       }
     }
-    console.log(`[AI auto-fill] Parsed ${rawEntries.length} entries from LLM response`);
+    console.log(`[AI auto-fill] Parsed ${rawEntries.length} entries from Claude response`);
 
     const result = validateAutoFillResponse(
       rawEntries,

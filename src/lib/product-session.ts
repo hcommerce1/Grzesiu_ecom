@@ -63,14 +63,34 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
   }
 
   if (fieldSelection?.features && session.filledParameters) {
-    const filled = Object.fromEntries(
-      Object.entries(session.filledParameters).filter(([, v]) =>
-        Array.isArray(v) ? v.length > 0 : v !== '' && v != null
-      )
-    );
+    // Buduj mapę: paramId -> { optionId -> polskiTekst }
+    const paramDicts: Record<string, Record<string, string>> = {};
+    for (const param of session.allegroParameters ?? []) {
+      if (param.dictionary && param.dictionary.length > 0) {
+        paramDicts[param.id] = Object.fromEntries(
+          param.dictionary.map(opt => [opt.id, opt.value])
+        );
+      }
+    }
+
+    const filled: Record<string, string | string[]> = {};
+    for (const [paramId, value] of Object.entries(session.filledParameters)) {
+      const dict = paramDicts[paramId];
+      if (Array.isArray(value)) {
+        const resolved = value.map(v => (dict ? (dict[v] ?? v) : v)).filter(Boolean);
+        if (resolved.length > 0) filled[paramId] = resolved;
+      } else if (value !== '' && value != null) {
+        filled[paramId] = dict ? (dict[value] ?? value) : value;
+      }
+    }
+
     if (Object.keys(filled).length > 0) {
       tf['features'] = JSON.stringify(filled);
     }
+  }
+
+  if (fieldSelection?.category_id && session.allegroCategory?.id) {
+    payload['category_id'] = parseInt(session.allegroCategory.id, 10) || session.allegroCategory.id;
   }
 
   // Extra fields

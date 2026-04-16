@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { AllegroPreview } from "./AllegroPreview"
 import { EmpikPreview } from "./EmpikPreview"
 import { ErliPreview } from "./ErliPreview"
-import type { ImageMeta } from "@/lib/types"
+import type { ImageMeta, AllegroParameter } from "@/lib/types"
 
 type PreviewTab = "allegro" | "empik" | "erli"
 
@@ -15,6 +15,7 @@ interface PreviewContainerProps {
   imagesMeta: ImageMeta[]
   parameters: Record<string, string | string[]>
   price?: number
+  parameterDefs?: AllegroParameter[]
 }
 
 const TABS: { key: PreviewTab; label: string; color: string }[] = [
@@ -29,6 +30,7 @@ export function PreviewContainer({
   imagesMeta,
   parameters,
   price,
+  parameterDefs,
 }: PreviewContainerProps) {
   const [activeTab, setActiveTab] = useState<PreviewTab>("allegro")
   const activeImages = imagesMeta.filter(i => !i.removed).map(i => i.url)
@@ -65,6 +67,7 @@ export function PreviewContainer({
                 images={activeImages}
                 parameters={parameters}
                 price={price}
+                parameterDefs={parameterDefs}
               />
             )}
             {activeTab === "empik" && (

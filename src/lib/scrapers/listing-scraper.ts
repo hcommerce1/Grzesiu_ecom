@@ -1,116 +1,111 @@
 import type { ListingProduct, ListingPageResult } from '../types';
 
+const SCRAPER_MODE = process.env.SCRAPER_MODE || 'decodo';
 const DECODO_API_USERNAME = process.env.DECODO_API_USERNAME || '';
 const DECODO_API_PASSWORD = process.env.DECODO_API_PASSWORD || '';
+const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY || '';
 
-// ─── Playwright — otwiera stronę sprzedawcy, wykonuje JS jak F12 konsola ───
-async function scrapeViaPlaywright(pageUrl: string): Promise<ListingPageResult> {
-  console.log(`[ListingScraper] Playwright: ${pageUrl}`);
+// ─── Decodo — pobiera HTML strony listingów ───
+async function fetchViaDecodo(pageUrl: string): Promise<string> {
+  const credentials = Buffer.from(`${DECODO_API_USERNAME}:${DECODO_API_PASSWORD}`).toString('base64');
+  const body = {
+    target: 'universal',
+    url: pageUrl,
+    headless: 'html',
+    locale: 'pl-PL',
+    geo: 'Poland',
+  };
+  console.log(`[ListingScraper] Decodo request: ${pageUrl}`);
+  const res = await fetch('https://scraper-api.decodo.com/v2/scrape', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Basic ${credentials}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!res.ok) throw new Error(`Decodo HTTP ${res.status}`);
+  const json = await res.json();
+  const results = json.results;
+  const first = Array.isArray(results) && results.length > 0 ? results[0] : json;
+  const html: string = typeof first.content === 'string' ? first.content
+    : typeof json.content === 'string' ? json.content
+    : (json.body ?? '');
+  if (html.length < 100) throw new Error(`Decodo: za mało HTML (${html.length} znaków)`);
+  return html;
+}
+
+// ─── ScrapingBee REST API — pobiera HTML strony listingów ───
+async function fetchViaScrapingBee(pageUrl: string): Promise<string> {
+  const apiUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_API_KEY}&url=${encodeURIComponent(pageUrl)}&render_js=true&premium_proxy=true&country_code=pl`;
+  console.log(`[ListingScraper] ScrapingBee request: ${pageUrl}`);
+  const res = await fetch(apiUrl, { signal: AbortSignal.timeout(60000) });
+  if (!res.ok) throw new Error(`ScrapingBee HTTP ${res.status}`);
+  const html = await res.text();
+  if (html.length < 100) throw new Error(`ScrapingBee: za mało HTML (${html.length} znaków)`);
+  return html;
+}
+
+// ─── Ekstrakcja produktów z HTML przez JSDOM ───
+function extractListingsFromHTML(html: string, baseUrl: string, currentPage: number): ListingPageResult {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { chromium } = require('playwright-extra');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const stealth = require('puppeteer-extra-plugin-stealth')();
-  chromium.use(stealth);
+  const { JSDOM } = require('jsdom');
+  const dom = new JSDOM(html, { url: baseUrl });
+  const document: Document = dom.window.document;
 
-  const browser = await chromium.launch({ headless: true });
-  try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      locale: 'pl-PL',
-      extraHTTPHeaders: { 'Accept-Language': 'pl-PL,pl;q=0.9' },
-    });
-    const page = await context.newPage();
+  const links = Array.from(document.querySelectorAll('a[href*="/oferta/"]')) as HTMLAnchorElement[];
+  const seen = new Set<string>();
+  const products: ListingProduct[] = [];
 
-    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  for (const a of links) {
+    const href = a.getAttribute('href') || '';
+    if (!href || seen.has(href) || href.includes('#')) continue;
+    const fullUrl = href.startsWith('http') ? href : new URL(href, baseUrl).toString();
+    seen.add(href);
 
-    // Scroll powoli żeby załadować lazy-loaded produkty
-    await page.evaluate(async () => {
-      await new Promise<void>((resolve) => {
-        let totalHeight = 0;
-        const distance = 400;
-        const timer = setInterval(() => {
-          window.scrollBy(0, distance);
-          totalHeight += distance;
-          if (totalHeight >= document.body.scrollHeight) {
-            clearInterval(timer);
-            resolve();
-          }
-        }, 150);
-        setTimeout(() => { clearInterval(timer); resolve(); }, 6000);
-      });
-    });
+    const card = a.closest('article')
+      || a.closest('[class*="card"]')
+      || a.closest('[class*="item"]')
+      || a.closest('li')
+      || a.parentElement;
 
-    await page.waitForTimeout(1500);
+    const titleEl = a.querySelector('h1,h2,h3,h4')
+      || card?.querySelector('[class*="title"],[class*="name"]');
+    const title = titleEl?.textContent?.trim()
+      || a.getAttribute('aria-label')
+      || a.getAttribute('title')
+      || a.textContent?.trim().replace(/\s+/g, ' ')
+      || '';
+    if (!title || title.length < 3) continue;
 
-    // Debug: sprawdź co jest na stronie
-    const pageTitle = await page.title();
-    const allLinksCount = await page.evaluate(() => document.querySelectorAll('a[href]').length);
-    const ofertaLinksCount = await page.evaluate(() => document.querySelectorAll('a[href*="/oferta/"]').length);
-    const pageUrl2 = page.url();
-    console.log(`[ListingScraper] title="${pageTitle}" url="${pageUrl2}" allLinks=${allLinksCount} ofertaLinks=${ofertaLinksCount}`);
+    const imgEl = (a.querySelector('img') || card?.querySelector('img')) as HTMLImageElement | null;
+    let img = imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-lazy-src') || imgEl?.getAttribute('src') || '';
+    if (img && (img.includes('icon') || img.includes('logo') || img.endsWith('.svg'))) img = '';
 
-    // F12 konsola — wyciągamy produkty z wyrenderowanego DOM
-    const result = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a[href*="/oferta/"]')) as HTMLAnchorElement[];
-      const seen = new Set<string>();
-      const products: { url: string; title: string; price?: string; img?: string; externalId?: string }[] = [];
+    const priceEl = card?.querySelector('[class*="price"],[data-testid*="price"]');
+    const price = priceEl?.textContent?.trim().replace(/\s+/g, ' ');
 
-      for (const a of links) {
-        const href = a.href;
-        if (!href || seen.has(href) || href.includes('#')) continue;
-        seen.add(href);
+    const idMatch = fullUrl.match(/\/oferta\/.*-(\d+?)(?:[/?#]|$)/);
 
-        const card = a.closest('article') || a.closest('[class*="card"]') || a.closest('[class*="item"]') || a.closest('li') || a.parentElement;
-        const titleEl = a.querySelector('h1,h2,h3,h4') || card?.querySelector('[class*="title"],[class*="name"]');
-        const title = titleEl?.textContent?.trim()
-          || a.getAttribute('aria-label')
-          || a.getAttribute('title')
-          || a.textContent?.trim().replace(/\s+/g, ' ')
-          || '';
-        if (!title || title.length < 3) continue;
-
-        const imgEl = a.querySelector('img') || card?.querySelector('img');
-        let img = imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-lazy-src') || imgEl?.getAttribute('src') || '';
-        if (img && (img.includes('icon') || img.includes('logo') || img.endsWith('.svg'))) img = '';
-
-        const priceEl = card?.querySelector('[class*="price"],[data-testid*="price"]');
-        const price = priceEl?.textContent?.trim().replace(/\s+/g, ' ');
-
-        const idMatch = href.match(/\/oferta\/.*-(\d+?)(?:[/?#]|$)/);
-
-        products.push({ url: href, title, price: price || undefined, img: img || undefined, externalId: idMatch?.[1] });
-        if (products.length >= 60) break;
-      }
-
-      // Wykrywanie stron
-      let maxPage = 1;
-      document.querySelectorAll('a[href]').forEach((a) => {
-        const m = (a as HTMLAnchorElement).href.match(/[?&]p=(\d+)/);
-        if (m) { const n = parseInt(m[1]); if (n > maxPage) maxPage = n; }
-      });
-
-      return { products, totalPages: maxPage };
-    });
-
-    console.log(`[ListingScraper] Playwright extracted ${result.products.length} products, totalPages=${result.totalPages}`);
-
-    const products: ListingProduct[] = result.products.map(p => ({
-      url: p.url,
-      externalId: p.externalId,
-      title: p.title,
-      thumbnailUrl: p.img || undefined,
-      price: p.price || undefined,
+    products.push({
+      url: fullUrl,
+      title,
+      price: price || undefined,
+      thumbnailUrl: img || undefined,
+      externalId: idMatch?.[1],
       currency: 'PLN',
-    }));
-
-    const urlObj = new URL(pageUrl);
-    const currentPage = parseInt(urlObj.searchParams.get('p') ?? '1', 10) || 1;
-
-    return { products, currentPage, totalPages: result.totalPages ?? 1 };
-
-  } finally {
-    await browser.close();
+    });
+    if (products.length >= 60) break;
   }
+
+  // Wykrywanie stron
+  let maxPage = 1;
+  document.querySelectorAll('a[href]').forEach((a) => {
+    const href = (a as HTMLAnchorElement).getAttribute('href') || '';
+    const m = href.match(/[?&]p=(\d+)/);
+    if (m) { const n = parseInt(m[1]); if (n > maxPage) maxPage = n; }
+  });
+
+  console.log(`[ListingScraper] Extracted ${products.length} products, totalPages=${maxPage}`);
+  return { products, currentPage, totalPages: maxPage };
 }
 
 function buildListingUrl(baseUrl: string, page: number): string {
@@ -126,5 +121,53 @@ function buildListingUrl(baseUrl: string, page: number): string {
 // ─── Public API ───
 export async function scrapeListingPage(sellerUrl: string, page: number): Promise<ListingPageResult> {
   const pageUrl = buildListingUrl(sellerUrl, page);
-  return scrapeViaPlaywright(pageUrl);
+  console.log(`[ListingScraper] Scraping page ${page}: ${pageUrl}`);
+
+  const mode = SCRAPER_MODE;
+  const hasDecodo = !!(DECODO_API_USERNAME && DECODO_API_PASSWORD);
+  const hasSBee = !!SCRAPINGBEE_API_KEY;
+
+  let html = '';
+
+  if (mode === 'decodo') {
+    if (hasDecodo) {
+      try {
+        html = await fetchViaDecodo(pageUrl);
+        console.log(`[ListingScraper] Decodo OK, ${html.length} znaków`);
+      } catch (err) {
+        console.warn(`[ListingScraper] Decodo failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    if (!html && hasSBee) {
+      try {
+        html = await fetchViaScrapingBee(pageUrl);
+        console.log(`[ListingScraper] ScrapingBee fallback OK, ${html.length} znaków`);
+      } catch (err) {
+        console.warn(`[ListingScraper] ScrapingBee failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  } else {
+    if (hasSBee) {
+      try {
+        html = await fetchViaScrapingBee(pageUrl);
+        console.log(`[ListingScraper] ScrapingBee OK, ${html.length} znaków`);
+      } catch (err) {
+        console.warn(`[ListingScraper] ScrapingBee failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    if (!html && hasDecodo) {
+      try {
+        html = await fetchViaDecodo(pageUrl);
+        console.log(`[ListingScraper] Decodo fallback OK, ${html.length} znaków`);
+      } catch (err) {
+        console.warn(`[ListingScraper] Decodo failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+
+  if (!html) {
+    throw new Error(`Nie udało się pobrać strony listingów (brak credentials lub błąd API): ${pageUrl}`);
+  }
+
+  return extractListingsFromHTML(html, pageUrl, page);
 }

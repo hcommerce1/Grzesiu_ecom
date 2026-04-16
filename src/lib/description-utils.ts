@@ -172,14 +172,21 @@ export function compileSectionsToHtml(sections: DescriptionSection[]): string {
 
   for (const section of sections) {
     if (section.layout === 'images-only') {
+      // Pełnoszerokościowe zdjęcia (np. logo, baner)
       for (const url of section.imageUrls) {
-        parts.push(`<section class="section">    <div class="item item-12">        <section class="image-item">            <img src="${url}"/>        </section>    </div></section>`);
+        parts.push(`<section class="section"><div class="item item-12"><section class="image-item"><img src="${url}"/></section></div></section>`);
+      }
+    } else if (section.layout === 'text-only' || !section.imageUrls[0]) {
+      // Pełnoszerokościowy tekst (brak zdjęcia)
+      const textContent = `${section.heading ? `<h2>${section.heading}</h2>` : ''}${section.bodyHtml}`;
+      if (textContent.trim()) {
+        parts.push(`<section class="section"><div class="item item-12"><section class="text-item">${textContent}</section></div></section>`);
       }
     } else {
+      // Standardowa: zdjęcie lewo (item-6), tekst prawo (item-6)
       const imgUrl = section.imageUrls[0];
-      if (imgUrl) {
-        parts.push(`<section class="section">    <div class="item item-6">        <section class="image-item">            <img src="${imgUrl}"/>        </section>    </div>    <div class="item item-6">        <section class="text-item">            ${section.heading ? `<h2>${section.heading}</h2>` : ''}${section.bodyHtml}        </section>    </div></section>`);
-      }
+      const textContent = `${section.heading ? `<h2>${section.heading}</h2>` : ''}${section.bodyHtml}`;
+      parts.push(`<section class="section"><div class="item item-6"><section class="image-item"><img src="${imgUrl}"/></section></div><div class="item item-6"><section class="text-item">${textContent}</section></div></section>`);
     }
   }
 
@@ -189,7 +196,7 @@ export function compileSectionsToHtml(sections: DescriptionSection[]): string {
 /**
  * CSS do podglądu opisu w preview (klasy z BaseLinker template).
  */
-export const DESCRIPTION_PREVIEW_CSS = `<style>.section{display:flex;gap:24px;margin-bottom:32px;align-items:flex-start}.item{box-sizing:border-box}.item-6{flex:0 0 50%;max-width:50%}.item-12{flex:0 0 100%;max-width:100%}.image-item img{width:100%;height:auto;border-radius:8px}.text-item h2{margin:0 0 12px;font-size:18px;font-weight:700;color:#222}.text-item{font-size:14px;line-height:1.6;color:#444}</style>`;
+export const DESCRIPTION_PREVIEW_CSS = `<style>.section{display:flex;gap:24px;margin-bottom:32px;align-items:flex-start;width:100%}.item{box-sizing:border-box}.item-6{flex:0 0 50%;max-width:50%}.item-12{flex:0 0 100%;max-width:100%}.image-item{overflow:hidden}.image-item img{width:100%;height:auto;border-radius:8px;display:block}.text-item h2{margin:0 0 12px;font-size:18px;font-weight:700;color:#222}.text-item{font-size:14px;line-height:1.6;color:#444}</style>`;
 
 /**
  * Buduje snapshot danych wejsciowych opisu z aktualnego stanu sesji.
@@ -223,6 +230,11 @@ export function interpolatePrompt(
     image_count: number;
     image_descriptions: string;
     uwagi: string;
+    reference_description?: string;
+    original_description?: string;
+    ean?: string;
+    sku?: string;
+    price?: string;
   },
 ): string {
   return template
@@ -232,5 +244,10 @@ export function interpolatePrompt(
     .replace(/\{parameters\}/g, vars.parameters)
     .replace(/\{image_count\}/g, String(vars.image_count))
     .replace(/\{image_descriptions\}/g, vars.image_descriptions)
-    .replace(/\{uwagi\}/g, vars.uwagi);
+    .replace(/\{uwagi\}/g, vars.uwagi)
+    .replace(/\{reference_description\}/g, vars.reference_description ?? '')
+    .replace(/\{original_description\}/g, vars.original_description ?? '(brak)')
+    .replace(/\{ean\}/g, vars.ean ?? '(brak)')
+    .replace(/\{sku\}/g, vars.sku ?? '(brak)')
+    .replace(/\{price\}/g, vars.price ?? '(brak)');
 }

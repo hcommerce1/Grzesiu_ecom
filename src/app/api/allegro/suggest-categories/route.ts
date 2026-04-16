@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 import { searchCategories, getCommissionInfo } from '@/lib/allegro';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 interface SuggestRequest {
   productTitle: string;
@@ -18,10 +18,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Brak tytułu produktu' }, { status: 400 });
     }
 
-    if (!OPENAI_API_KEY) {
-      return NextResponse.json({ error: 'OPENAI_API_KEY nie jest ustawiony' }, { status: 500 });
-    }
-
     // Step 1: Ask LLM to suggest category search terms
     const attributesSummary = body.productAttributes
       ? Object.entries(body.productAttributes)
@@ -30,7 +26,7 @@ export async function POST(req: Request) {
           .join('\n')
       : '';
 
-    const prompt = `Jesteś ekspertem od kategoryzacji produktów na Allegro.pl.
+    const userPrompt = `Jesteś ekspertem od kategoryzacji produktów na Allegro.pl.
 
 Produkt: "${body.productTitle}"
 ${body.sourceCategory ? `Kategoria źródłowa: ${body.sourceCategory}` : ''}
@@ -39,33 +35,16 @@ ${attributesSummary ? `Atrybuty:\n${attributesSummary}` : ''}
 Zaproponuj 5-8 wyszukiwań kategorii Allegro, które najlepiej pasują do tego produktu.
 Każde wyszukiwanie to 1-3 słowa kluczowe po polsku, które mogą być nazwą kategorii liściowej na Allegro.
 
-Odpowiedz w formacie JSON:
-{"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}
+Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
+{"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}`;
 
-Podaj TYLKO JSON, bez komentarzy.`;
-
-    const llmRes = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: LLM_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-        max_tokens: 500,
-      }),
+    const llmRes = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 500,
+      messages: [{ role: 'user', content: userPrompt }],
     });
 
-    if (!llmRes.ok) {
-      const text = await llmRes.text();
-      return NextResponse.json({ error: `LLM error: ${text}` }, { status: 500 });
-    }
-
-    const llmData = await llmRes.json();
-    const content = llmData.choices?.[0]?.message?.content ?? '{}';
+    const content = (llmRes.content[0] as { type: 'text'; text: string }).text ?? '{}';
     let searches: string[] = [];
     try {
       const parsed = JSON.parse(content);

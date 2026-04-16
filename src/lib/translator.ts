@@ -1,12 +1,7 @@
+import Anthropic from '@anthropic-ai/sdk';
 import type { ProductData } from './types';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
-
-interface ChatMessage {
-    role: 'system' | 'user' | 'assistant';
-    content: string;
-}
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 interface TranslationResult {
     title: string;
@@ -14,31 +9,17 @@ interface TranslationResult {
     attributes: Record<string, string>;
 }
 
-async function callLLM(messages: ChatMessage[]): Promise<string> {
-    if (!OPENAI_API_KEY) {
-        throw new Error('OPENAI_API_KEY is not set. Add it to .env.local to enable translation.');
-    }
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-            model: LLM_MODEL,
-            messages,
-            response_format: { type: 'json_object' },
-        }),
+async function callLLM(systemPrompt: string, userContent: string): Promise<string> {
+    const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userContent }],
     });
 
-    if (!response.ok) {
-        const errBody = await response.text();
-        throw new Error(`LLM API error (${response.status}): ${errBody}`);
-    }
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || '';
+    const text = (response.content[0] as { type: 'text'; text: string }).text || '';
+    // Strip markdown code fences if model wraps JSON despite instructions
+    return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
 }
 
 /**
@@ -46,11 +27,6 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
  * Uzyj tego w nowym flow, gdzie opis generowany jest osobno.
  */
 export async function translateProductBasic(product: ProductData): Promise<ProductData> {
-    if (!OPENAI_API_KEY) {
-        console.warn('No OPENAI_API_KEY set — skipping translation.');
-        return product;
-    }
-
     const basicPrompt = `Na podstawie poniższych danych produktu:
 1. Przetłumacz tytuł produktu na polski (naturalnie brzmiące tłumaczenie, NIE tytuł aukcji Allegro)
 2. Przetłumacz wszystkie atrybuty (klucze i wartości) na polski
@@ -58,7 +34,7 @@ export async function translateProductBasic(product: ProductData): Promise<Produ
 
 Pisz wyłącznie po polsku. Zachowaj sens i dokładność tłumaczenia.
 
-Zwróć TYLKO JSON:
+Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 {
   "title": "przetłumaczony tytuł",
   "description": "przetłumaczony opis",
@@ -72,15 +48,10 @@ Zwróć TYLKO JSON:
             attributes: product.attributes,
         };
 
-        const messages: ChatMessage[] = [
-            { role: 'system', content: basicPrompt },
-            {
-                role: 'user',
-                content: `Przetłumacz poniższe dane produktu na polski:\n\n${JSON.stringify(payload, null, 2)}`,
-            },
-        ];
-
-        const responseText = await callLLM(messages);
+        const responseText = await callLLM(
+            basicPrompt,
+            `Przetłumacz poniższe dane produktu na polski:\n\n${JSON.stringify(payload, null, 2)}`,
+        );
         const translated: TranslationResult = JSON.parse(responseText);
 
         return {
@@ -99,11 +70,6 @@ Zwróć TYLKO JSON:
  * Pelne tlumaczenie + generowanie opisu sprzedazowego (stary flow, fallback).
  */
 export async function translateProduct(product: ProductData, customPrompt?: string): Promise<ProductData> {
-    if (!OPENAI_API_KEY) {
-        console.warn('No OPENAI_API_KEY set — skipping translation.');
-        return product;
-    }
-
     const defaultPrompt = `Na podstawie poniższego opisu producenta stwórz profesjonalny tytuł aukcji Allegro oraz skuteczny, sprzedażowy opis produktu. Oferta będzie wystawiona na polskim Allegro.
 
 ### Tytuł Allegro:
@@ -191,7 +157,7 @@ Wybierz fotel FLEXISPOT XC6 i ciesz się komfortowym miejscem do odpoczynku w sw
 
 Spróbuj zachować tą formę i styl dla każdego produktu, który będzie tłumaczony. Pamiętaj, że tytuł musi być w WIELKICH LITERACH, a opis powinien być atrakcyjny i nastawiony na sprzedaż.
 
-Return ONLY a JSON object with the structure:
+Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 {
   "title": "tytuł allegro WIELKIMI LITERAMI",
   "description": "pełny opis sprzedażowy",
@@ -209,24 +175,16 @@ Return ONLY a JSON object with the structure:
         const sysContent = hasCustomPrompt ? customPrompt.trim() : defaultPrompt;
         const finalPrompt = sysContent.toLowerCase().includes('json')
             ? sysContent
-            : sysContent + '\n\nReturn the result as a JSON object.';
+            : sysContent + '\n\nOdpowiedz WYŁĄCZNIE poprawnym JSON bez markdown.';
 
         const userInstruction = hasCustomPrompt
             ? 'Apply the system instructions to this product data and return the transformed result.'
             : 'Stwórz profesjonalny tytuł i opis dla Allegro na podstawie poniższych danych produktu.';
 
-        const messages: ChatMessage[] = [
-            {
-                role: 'system',
-                content: finalPrompt,
-            },
-            {
-                role: 'user',
-                content: `${userInstruction}\n\n${JSON.stringify(payload, null, 2)}`,
-            },
-        ];
-
-        const responseText = await callLLM(messages);
+        const responseText = await callLLM(
+            finalPrompt,
+            `${userInstruction}\n\n${JSON.stringify(payload, null, 2)}`,
+        );
         const translated: TranslationResult = JSON.parse(responseText);
 
         return {

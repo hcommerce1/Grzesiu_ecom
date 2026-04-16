@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import type { DescriptionSection, AllegroParameter, ImageMeta, ChatAction } from '@/lib/types';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const CLAUDE_MODEL = 'claude-opus-4-6';
 
 interface DescriptionChatRequest {
   message: string;
@@ -12,6 +12,19 @@ interface DescriptionChatRequest {
   imagesMeta: ImageMeta[];
   allegroParameters?: AllegroParameter[];
   conversationHistory?: Array<{ role: string; content: string }>;
+  stanTechniczny?: string;
+  uwagi?: string;
+  // Pełny kontekst produktu
+  originalDescription?: string;
+  price?: string;
+  currency?: string;
+  ean?: string;
+  sku?: string;
+  productUrl?: string;
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function buildSystemPrompt(body: DescriptionChatRequest): string {
@@ -52,10 +65,13 @@ function buildSystemPrompt(body: DescriptionChatRequest): string {
     }
   }
 
-  // Sekcje opisu z indeksami
+  // Sekcje opisu z indeksami i podglądem treści
   const sectionsList = body.sections
-    .map((s, i) => `Indeks ${i}: [${s.id}] layout: ${s.layout}, heading: "${s.heading}", zdjęcia: [${s.imageUrls.join(', ')}]`)
-    .join('\n');
+    .map((s, i) => {
+      const preview = stripHtml(s.bodyHtml || '').slice(0, 300);
+      return `Indeks ${i}: [${s.id}] layout: ${s.layout}, heading: "${s.heading}", zdjęcia: [${s.imageUrls.join(', ')}]\nTreść: ${preview || '(pusta)'}`;
+    })
+    .join('\n\n');
 
   // Mapa zdjęć — które są wolne, które gdzie przypisane
   const usedUrlsMap = new Map<string, string[]>();
@@ -80,9 +96,29 @@ function buildSystemPrompt(body: DescriptionChatRequest): string {
     })
     .join('\n');
 
-  return `Jesteś asystentem do edycji ofert e-commerce na Allegro.
+  const stanSection = (body.stanTechniczny || body.uwagi)
+    ? `\n## STAN TECHNICZNY PRODUKTU\nStan: ${body.stanTechniczny || 'brak danych'}${body.uwagi ? `\nUwagi: ${body.uwagi}` : ''}\n`
+    : '';
+
+  const productDataSection = [
+    body.price ? `Cena: ${body.price}${body.currency ? ' ' + body.currency : ''}` : '',
+    body.ean ? `EAN: ${body.ean}` : '',
+    body.sku ? `SKU: ${body.sku}` : '',
+    body.productUrl ? `URL źródłowy: ${body.productUrl}` : '',
+  ].filter(Boolean).join('\n');
+
+  const originalDescSection = body.originalDescription?.trim()
+    ? `\n## ORYGINALNY OPIS PRODUKTU (ze źródła)\n${body.originalDescription.slice(0, 3000)}\n`
+    : '';
+
+  return `WAŻNE: Twoja odpowiedź to WYŁĄCZNIE obiekt JSON. Absolutnie żadnego tekstu poza JSON. Zacznij od "{" i zakończ na "}".
+
+Jesteś asystentem do edycji ofert e-commerce na Allegro.
 Pomagasz modyfikować tytuł, opis i parametry produktu.
 Interpretujesz polecenia użytkownika i tłumaczysz je na konkretne akcje.
+${stanSection}${originalDescSection}
+## DANE IDENTYFIKACYJNE PRODUKTU
+${productDataSection || '(brak danych)'}
 
 ## AKTUALNY TYTUŁ
 ${body.currentTitle}
@@ -187,6 +223,11 @@ Przykład: "Nie mogę dodać nowego zdjęcia do galerii, ale mogę przenieść i
 - Możesz zwracać WIELE akcji naraz — np. zamiana sekcji + dodanie zdjęcia w jednym kroku
 - Gdy nie rozumiesz co użytkownik chce — zapytaj, nie zgaduj
 
+## WYBÓR AKCJI: update_section vs expand_section
+- Użytkownik mówi "dopisz", "dodaj", "uzupełnij", "wstaw", "dodaj zdanie", "wstaw informację" → ZAWSZE użyj expand_section (dokłada do istniejącej treści, NIE nadpisuje)
+- Użytkownik mówi "zmień", "przepisz", "zastąp", "popraw całość", "przepisz sekcję" → użyj update_section
+- NIGDY nie używaj update_section gdy użytkownik chce tylko coś dopisać — straciłbyś istniejącą treść
+
 Zwróć JSON:
 {
   "message": "krótki opis co zrobiłeś",
@@ -202,49 +243,64 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Brak wiadomości' }, { status: 400 });
     }
 
-    if (!OPENAI_API_KEY) {
-      return NextResponse.json({ error: 'OPENAI_API_KEY nie jest ustawiony' }, { status: 500 });
+    if (!ANTHROPIC_API_KEY) {
+      return NextResponse.json({ error: 'ANTHROPIC_API_KEY nie jest ustawiony' }, { status: 500 });
     }
 
     const systemPrompt = buildSystemPrompt(body);
 
-    // Build conversation messages with history
-    const conversationMessages: Array<{ role: string; content: string }> = [
-      { role: 'system', content: systemPrompt },
-    ];
+    // Build conversation messages with history (Claude format)
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
     if (body.conversationHistory?.length) {
-      // Include recent history (last 10 messages to avoid token overflow)
       const recentHistory = body.conversationHistory.slice(-10);
       for (const msg of recentHistory) {
-        conversationMessages.push({ role: msg.role, content: msg.content });
+        messages.push({ role: msg.role as 'user' | 'assistant', content: msg.content });
       }
     }
 
-    conversationMessages.push({ role: 'user', content: body.message });
+    messages.push({ role: 'user', content: body.message });
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: LLM_MODEL,
-        messages: conversationMessages,
-        response_format: { type: 'json_object' },
+        model: CLAUDE_MODEL,
         max_tokens: 3000,
+        system: systemPrompt,
+        messages,
       }),
     });
 
     if (!response.ok) {
       const err = await response.text();
-      throw new Error(`LLM API error (${response.status}): ${err}`);
+      throw new Error(`Claude API error (${response.status}): ${err}`);
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '{}';
-    const parsed = JSON.parse(content);
+    const rawContent = data.content?.[0]?.text ?? '{}';
+    const cleaned = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    let parsed: { message?: string; actions?: ChatAction[] };
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      // Try extracting JSON object from response
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          parsed = JSON.parse(jsonMatch[0]);
+        } catch {
+          parsed = { message: cleaned, actions: [] };
+        }
+      } else {
+        parsed = { message: cleaned, actions: [] };
+      }
+    }
 
     const actions: ChatAction[] = Array.isArray(parsed.actions) ? parsed.actions : [];
 

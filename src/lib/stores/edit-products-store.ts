@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { BLProductType } from '../types';
+import type { BLProductType, ProductSession, GeneratedDescription } from '../types';
+
+export interface EditBatchConfig {
+  diffFields: string[];
+  extraAttributesToExtract: string[];
+  keepExistingImages: boolean;
+}
 
 export interface EditProductsFilters {
   search: string;
@@ -46,12 +52,30 @@ interface EditProductsState {
   setCurrentPage: (page: number) => void;
   setItemsPerPage: (n: number) => void;
 
-  // Batch edit
+  // Batch edit (sequential)
   batchQueue: string[] | null;
   batchIndex: number;
   startBatch: (ids: string[]) => void;
   advanceBatch: () => void;
   cancelBatch: () => void;
+
+  // Batch config (set before entering edit queue)
+  editBatchConfig: EditBatchConfig | null;
+  setEditBatchConfig: (config: EditBatchConfig | null) => void;
+
+  // Auto-apply modal
+  showApplyModal: boolean;
+  setShowApplyModal: (v: boolean) => void;
+  completedTemplateSession: ProductSession | null;
+  setCompletedTemplateSession: (s: ProductSession | null) => void;
+  completedDescriptionTemplate: GeneratedDescription | null;
+  setCompletedDescriptionTemplate: (d: GeneratedDescription | null) => void;
+  completedTitleTemplate: string | null;
+  setCompletedTitleTemplate: (t: string | null) => void;
+
+  // Edit batch job progress
+  editBatchJobId: string | null;
+  setEditBatchJobId: (id: string | null) => void;
 }
 
 const DEFAULT_FILTERS: EditProductsFilters = {
@@ -131,7 +155,7 @@ export const useEditProductsStore = create<EditProductsState>()(
       setCurrentPage: (page) => set({ currentPage: page }),
       setItemsPerPage: (n) => set({ itemsPerPage: n, currentPage: 1 }),
 
-      // Batch edit
+      // Batch edit (sequential)
       batchQueue: null,
       batchIndex: 0,
       startBatch: (ids) => set({ batchQueue: ids, batchIndex: 0 }),
@@ -146,6 +170,24 @@ export const useEditProductsStore = create<EditProductsState>()(
         }
       },
       cancelBatch: () => set({ batchQueue: null, batchIndex: 0 }),
+
+      // Batch config
+      editBatchConfig: null,
+      setEditBatchConfig: (config) => set({ editBatchConfig: config }),
+
+      // Auto-apply modal
+      showApplyModal: false,
+      setShowApplyModal: (v) => set({ showApplyModal: v }),
+      completedTemplateSession: null,
+      setCompletedTemplateSession: (s) => set({ completedTemplateSession: s }),
+      completedDescriptionTemplate: null,
+      setCompletedDescriptionTemplate: (d) => set({ completedDescriptionTemplate: d }),
+      completedTitleTemplate: null,
+      setCompletedTitleTemplate: (t) => set({ completedTitleTemplate: t }),
+
+      // Edit batch job progress
+      editBatchJobId: null,
+      setEditBatchJobId: (id) => set({ editBatchJobId: id }),
     }),
     {
       name: 'bl-edit-products',
@@ -165,6 +207,12 @@ export const useEditProductsStore = create<EditProductsState>()(
         currentPage: 1,
         batchQueue: null,
         batchIndex: 0,
+        editBatchConfig: null,
+        showApplyModal: false,
+        completedTemplateSession: null,
+        completedDescriptionTemplate: null,
+        completedTitleTemplate: null,
+        editBatchJobId: null,
       }),
     }
   )

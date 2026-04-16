@@ -8,6 +8,11 @@ export interface ProductData {
   ean?: string;
   sku?: string;
   url: string;
+  // Edit mode extras
+  isBundle?: boolean;
+  bundleProducts?: Record<string, number>;
+  taxRate?: number;
+  bundleContextText?: string;
 }
 
 export interface ScrapeResult {
@@ -182,6 +187,8 @@ export interface ProductSession {
   // Google Sheets integration
   sheetProductId?: string;
   sheetMeta?: SheetMeta;
+  // Workflow step persistence (for resume)
+  currentStep?: string;
 }
 
 // ─── Google Sheets Types ───
@@ -234,7 +241,7 @@ export interface DescriptionSection {
   imageUrls: string[]
   heading: string
   bodyHtml: string
-  layout: 'image-text' | 'images-only'
+  layout: 'image-text' | 'images-only' | 'text-only'
 }
 
 export interface GeneratedDescription {
@@ -288,7 +295,7 @@ export interface ChatAction {
   /** Single image URL for add/remove image actions */
   imageUrl?: string
   /** Section layout for change_section_layout */
-  layout?: 'image-text' | 'images-only'
+  layout?: 'image-text' | 'images-only' | 'text-only'
   /** Ordered section IDs for reorder_sections */
   sectionIds?: string[]
   /** Insert after this section for add_section */

@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 import type { ImageGenPreference, PromptClassification } from '@/lib/types';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SYSTEM_PROMPT = `You are an image-generation prompt classifier for an e-commerce product photo tool.
 
@@ -27,7 +27,8 @@ Rules:
 - If no source image is provided and intent would be an edit, switch to "generation"
 - translatedPrompt: translate to English and optimize for image generation (add detail, photographic style hints for product photos)
 - suggestion: if prompt is acceptable but vague or could be better, suggest improvements in Polish. null if prompt is already good.
-- confidence: how sure you are about the intent classification`;
+- confidence: how sure you are about the intent classification
+- Answer with ONLY valid JSON, no markdown fences.`;
 
 interface RequestBody {
   prompt: string;
@@ -51,38 +52,19 @@ export async function POST(req: Request) {
       } satisfies PromptClassification);
     }
 
-    if (!OPENAI_API_KEY) {
-      return NextResponse.json({ error: 'OPENAI_API_KEY nie jest ustawiony' }, { status: 500 });
-    }
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: LLM_MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `Prompt: "${prompt}"\nHas source image: ${hasSourceImage}\nPreferred generation model: ${preference}`,
-          },
-        ],
-        response_format: { type: 'json_object' },
-        max_tokens: 300,
-        temperature: 0,
-      }),
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: `Prompt: "${prompt}"\nHas source image: ${hasSourceImage}\nPreferred generation model: ${preference}`,
+        },
+      ],
     });
 
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`OpenAI API error (${response.status}): ${err}`);
-    }
-
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '{}';
+    const content = (response.content[0] as { type: 'text'; text: string }).text || '{}';
     const parsed = JSON.parse(content);
 
     // Mapuj intencję na provider

@@ -116,6 +116,11 @@ const IGNORED_HEADERS = new Set([
   'status', 'data dodania', 'data dodania do lokalizacji',
 ]);
 
+function resolveImageFormula(raw: string): string {
+  const m = raw.match(/=IMAGE\("([^"]+)"/i);
+  return m ? m[1] : raw;
+}
+
 /**
  * Fetch all product rows from the configured Google Sheet.
  * Dynamically reads headers from row 1 and maps columns accordingly.
@@ -197,7 +202,8 @@ export async function fetchAllRows(): Promise<SheetRowInput[]> {
       if (!val) continue;
 
       if (col.field && col.field !== ('id' as never)) {
-        (entry as unknown as Record<string, unknown>)[col.field] = val;
+        const resolved = col.field === 'zdjecie' ? resolveImageFormula(val) : val;
+        (entry as unknown as Record<string, unknown>)[col.field] = resolved;
       } else if (!col.field && !IGNORED_HEADERS.has(normalizeHeader(col.rawHeader))) {
         extras[col.rawHeader] = val;
       }

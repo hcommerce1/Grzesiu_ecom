@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { DESCRIPTION_PREVIEW_CSS } from "@/lib/description-utils"
+import type { AllegroParameter } from "@/lib/types"
 
 interface Props {
   title: string
@@ -9,6 +10,7 @@ interface Props {
   images: string[]
   parameters: Record<string, string | string[]>
   price?: number
+  parameterDefs?: AllegroParameter[]
 }
 
 const DAYS_PL = ["ndz", "pon", "wt", "śr", "czw", "pt", "sob"]
@@ -72,12 +74,24 @@ const ChevronIcon = () => (
   </svg>
 )
 
-export function AllegroPreview({ title, fullHtml, images, parameters, price }: Props) {
+export function AllegroPreview({ title, fullHtml, images, parameters, price, parameterDefs }: Props) {
   const [mainImage, setMainImage] = useState(0)
   const displayPrice = price ?? 0
   const priceWhole = Math.floor(displayPrice)
   const priceFraction = String(Math.round((displayPrice - priceWhole) * 100)).padStart(2, "0")
-  const paramEntries = Object.entries(parameters).slice(0, 16)
+  const paramEntries = Object.entries(parameters)
+    .slice(0, 16)
+    .map(([id, val]) => {
+      const def = parameterDefs?.find(p => p.id === id)
+      const opts =
+        (Array.isArray(def?.options) ? def.options : null) ??
+        (Array.isArray(def?.restrictions?.allowedValues) ? def.restrictions.allowedValues : null) ??
+        (Array.isArray(def?.dictionary) ? def.dictionary : null) ??
+        []
+      const translateVal = (v: string) => opts.find(o => o.id === v)?.value ?? v
+      const translatedVal = Array.isArray(val) ? val.map(translateVal) : translateVal(val)
+      return [def?.name ?? id, translatedVal] as [string, string | string[]]
+    })
   const installment = (displayPrice / 4).toFixed(2)
 
   return (
@@ -435,7 +449,7 @@ export function AllegroPreview({ title, fullHtml, images, parameters, price }: P
             <h2 style={{ fontSize: 20, fontWeight: 600, margin: '0 0 24px', color: '#1a1a1a' }}>Opis</h2>
             <div
               dangerouslySetInnerHTML={{ __html: DESCRIPTION_PREVIEW_CSS + fullHtml }}
-              style={{ lineHeight: 1.7, color: '#333', fontSize: 14 }}
+              style={{ lineHeight: 1.7, color: '#333', fontSize: 14, overflow: 'hidden' }}
             />
           </div>
         </div>

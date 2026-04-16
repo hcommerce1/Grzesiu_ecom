@@ -96,7 +96,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
     if (productData?.title && !selectedCategory && suggestions.length === 0) {
       loadSuggestions();
     }
-  }, []);
+  }, [productData?.title]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load tree categories when path changes
   useEffect(() => {
@@ -331,9 +331,16 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
               <button
                 onClick={loadSuggestions}
                 disabled={suggestionsLoading}
-                className="text-xs text-gray-500 hover:text-gray-600 font-medium px-2 py-1 rounded hover:bg-gray-50 transition-colors disabled:opacity-50"
+                className="text-xs text-gray-500 hover:text-gray-600 font-medium px-2 py-1 rounded hover:bg-gray-50 transition-colors disabled:opacity-50 flex items-center gap-1"
               >
-                Odśwież
+                {suggestionsLoading ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Ładuję...
+                  </>
+                ) : (
+                  'Odśwież'
+                )}
               </button>
             )}
           </div>

@@ -190,11 +190,25 @@ function FilterableSelect({
         {filtered.length === 0 && (
           <div className="px-2 py-4 text-center text-sm text-muted-foreground">Brak wyników</div>
         )}
-        {filtered.slice(0, 50).map((opt) => (
-          <SelectItem key={opt.id} value={opt.id}>
-            {opt.label}
-          </SelectItem>
-        ))}
+        {(() => {
+          const sliced = filtered.slice(0, 50)
+          const selectedInSlice = !value || sliced.some((o) => o.id === value)
+          const extraSelected = !selectedInSlice ? options.find((o) => o.id === value) : null
+          return (
+            <>
+              {extraSelected && (
+                <SelectItem key={extraSelected.id} value={extraSelected.id} className="hidden">
+                  {extraSelected.label}
+                </SelectItem>
+              )}
+              {sliced.map((opt) => (
+                <SelectItem key={opt.id} value={opt.id}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </>
+          )
+        })()}
         {filtered.length > 50 && (
           <div className="px-2 py-2 text-center text-xs text-muted-foreground">
             Wpisz więcej aby zawęzić ({filtered.length - 50} ukrytych)

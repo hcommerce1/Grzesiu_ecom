@@ -100,6 +100,8 @@ interface FieldsAndParametersStepProps {
   onEditableFieldValueChange?: (key: string, value: string) => void;
   /** BL manufacturers list for manufacturer dropdown */
   manufacturers?: { manufacturer_id: number; name: string }[];
+  /** Whether this is editing an existing product (locks bundle toggle) */
+  isEditMode?: boolean;
 }
 
 /* ─── Section Header ─── */
@@ -645,6 +647,7 @@ function FieldsAndParametersStepInner({
   editableFieldValues,
   onEditableFieldValueChange,
   manufacturers,
+  isEditMode,
 }: FieldsAndParametersStepProps) {
   const parameters = rawParameters ?? [];
 
@@ -824,26 +827,32 @@ function FieldsAndParametersStepInner({
                 {isBundle ? 'Tak — produkt jest zestawem' : 'Nie — produkt podstawowy'}
               </span>
             </div>
-            <div className="flex gap-1">
-              {[
-                { v: false, label: 'Nie' },
-                { v: true, label: 'Tak' },
-              ].map(({ v, label }) => (
-                <button
-                  key={String(v)}
-                  type="button"
-                  onClick={() => onIsBundleChange(v)}
-                  className={cn(
-                    'flex-1 h-9 rounded-lg border text-sm font-medium transition-colors',
-                    isBundle === v
-                      ? 'border-primary bg-accent text-accent-foreground'
-                      : 'border-input hover:bg-muted'
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            {isEditMode ? (
+              <div className="px-3 py-2 rounded-lg bg-muted/40 text-sm text-muted-foreground">
+                {isBundle ? '✓ Zestaw (niezmieniane)' : '✓ Produkt podstawowy (niezmieniane)'}
+              </div>
+            ) : (
+              <div className="flex gap-1">
+                {[
+                  { v: false, label: 'Nie' },
+                  { v: true, label: 'Tak' },
+                ].map(({ v, label }) => (
+                  <button
+                    key={String(v)}
+                    type="button"
+                    onClick={() => onIsBundleChange(v)}
+                    className={cn(
+                      'flex-1 h-9 rounded-lg border text-sm font-medium transition-colors',
+                      isBundle === v
+                        ? 'border-primary bg-accent text-accent-foreground'
+                        : 'border-input hover:bg-muted'
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Bundle products picker */}

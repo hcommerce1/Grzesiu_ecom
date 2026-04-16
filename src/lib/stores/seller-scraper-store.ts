@@ -26,9 +26,15 @@ interface SellerScraperStore {
   chatMessages: AIChatMessage[];
   currentPage: number;
   totalPages: number;
+  /** URL of a reference product for description context */
+  referenceProductUrl: string;
+  /** Scraped text description from reference URL */
+  referenceProductDescription: string;
 
   // Actions
   setStep: (step: SellerScraperStep) => void;
+  setReferenceProductUrl: (url: string) => void;
+  setReferenceProductDescription: (desc: string) => void;
   setSession: (session: SellerScrapeSession, sessionId: string) => void;
   setListings: (listings: SellerScrapedListing[]) => void;
   addListings: (listings: SellerScrapedListing[]) => void;
@@ -62,6 +68,8 @@ const initialState = {
   chatMessages: [],
   currentPage: 1,
   totalPages: 0,
+  referenceProductUrl: '',
+  referenceProductDescription: '',
 };
 
 export const useSellerScraperStore = create<SellerScraperStore>()(
@@ -70,6 +78,10 @@ export const useSellerScraperStore = create<SellerScraperStore>()(
       ...initialState,
 
       setStep: (step) => set({ step }),
+
+      setReferenceProductUrl: (url) => set({ referenceProductUrl: url }),
+
+      setReferenceProductDescription: (desc) => set({ referenceProductDescription: desc }),
 
       setSession: (session, sessionId) => set({ session, sessionId }),
 

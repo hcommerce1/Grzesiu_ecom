@@ -99,6 +99,7 @@ export function buildAutoFillPrompt(
   productData: ProductData,
   parameters: AllegroParameter[],
   alreadyFilled: Record<string, string | string[]>,
+  imageMeta?: Array<{ url: string; aiDescription?: string; features?: string[] }>,
 ): { systemPrompt: string; parameterIds: string[] } {
   const tiers = tierParameters(parameters, productData, alreadyFilled);
   if (tiers.length === 0) {
@@ -140,16 +141,28 @@ export function buildAutoFillPrompt(
     finalIds = reducedIds;
   }
 
-  const systemPrompt = `Jesteś systemem ekstrakcji danych produktowych. Twoje zadanie to dopasowanie danych zeskrapowanych ze strony produktowej do parametrów kategorii Allegro.
+  // Build image descriptions section
+  const imageLines = (imageMeta ?? [])
+    .filter(m => m.aiDescription || (m.features && m.features.length > 0))
+    .map((m, i) => {
+      const parts: string[] = [`Zdjęcie ${i + 1}:`];
+      if (m.aiDescription) parts.push(`  Opis: ${m.aiDescription}`);
+      if (m.features?.length) parts.push(`  Widoczne cechy: ${m.features.join(', ')}`);
+      return parts.join('\n');
+    })
+    .join('\n');
+
+  const systemPrompt = `Jesteś systemem ekstrakcji danych produktowych. Twoje zadanie to dopasowanie danych zescrapowanych ze strony produktowej do parametrów kategorii Allegro.
 
 ## ZASADY BEZWZGLĘDNE
 1. NIGDY nie wymyślaj wartości. Każda wartość MUSI pochodzić z danych produktu podanych poniżej.
 2. Dla parametrów typu dictionary — zwracaj WYŁĄCZNIE ID z listy dozwolonych wartości (np. "225088"). Możesz też zwrócić nazwę opcji (np. "Nowy") — system ją dopasuje.
 3. POMIJAJ parametry, dla których nie znaleziono wartości. NIE zwracaj ich wcale (ani z null, ani z pustą wartością).
-4. W polu "source" podaj DOKŁADNIE skąd wzięta wartość (np. "attributes.Kolor = Czarny").
+4. W polu "source" podaj DOKŁADNIE skąd wzięta wartość (np. "attributes.Kolor = Czarny" lub "zdjęcie 1: widoczne 4 sztuki").
 5. Confidence: skala 0.0-1.0 (NIE 0-100). 1.0 = pewne, 0.8 = prawdopodobne, 0.6 = niepewne.
 6. Dopasowuj parametr do NAJBLIŻSZEGO atrybutu — np. "Materiał stelaża" szukaj w atrybucie "Materiał", NIE w "Składany".
-7. Dla parametru "Stan" — jeśli produkt jest nowy/używany, dopasuj odpowiednią opcję z dictionary.
+7. Dla parametru "Stan" — dopasuj odpowiednią opcję z dictionary na podstawie stanu produktu.
+8. Zdjęcia to dodatkowe źródło informacji — używaj ich do wyciągania liczby sztuk, kolorów, wymiarów widocznych na etykietach.
 
 ## DANE PRODUKTU
 
@@ -163,6 +176,7 @@ ${attrLines || '(brak)'}
 
 EAN: ${productData.ean || '(brak)'}
 SKU: ${productData.sku || '(brak)'}
+${imageLines ? `\nOpisy zdjęć produktu (pomocnicze źródło danych):\n${imageLines}` : ''}
 
 ## PARAMETRY DO WYPEŁNIENIA
 

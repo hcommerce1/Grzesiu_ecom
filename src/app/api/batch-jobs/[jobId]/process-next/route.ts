@@ -31,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ job
     updateBatchJob(jobId, { lastActivity: new Date().toISOString() });
 
     try {
-      const templateSession: ProductSession = job.templateSession;
+      let templateSession: ProductSession = { ...job.templateSession };
       const diffFields: string[] = job.diffFields ?? [];
       const descTemplate: GeneratedDescription | null = job.descriptionTemplate ?? null;
       const titleTemplate: string | null = job.titleTemplate ?? null;
@@ -47,8 +47,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ job
       // For edit mode, set the product_id from item's blProductId
       const itemOverrides = item.overrideData;
       const editProductId = item.blProductId;
-      if (mode === 'edit' && editProductId) {
-        templateSession.product_id = editProductId;
+      if (mode === 'edit') {
+        if (!editProductId) {
+          updateBatchJobItem(item.id, {
+            status: 'error',
+            errorMessage: 'Brak blProductId — produkt nie może zostać zaktualizowany (tryb edit wymaga ID produktu BL)',
+          });
+          updateBatchJob(jobId, {
+            failedItems: job.failedItems + 1,
+            lastActivity: new Date().toISOString(),
+          });
+          const progress = getBatchJobProgress(jobId);
+          return NextResponse.json({
+            done: false,
+            item: { id: item.id, label: item.label, error: 'Brak blProductId' },
+            progress,
+          });
+        }
+        // Patch without mutating original templateSession
+        templateSession = { ...templateSession, product_id: editProductId };
       }
 
       const clonedSession = cloneSessionForItem(

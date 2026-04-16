@@ -5,7 +5,7 @@ import { Store, Trash2, Loader2, CheckCircle2, XCircle, Clock, Send, ChevronLeft
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
-import { useSellerScraperStore } from "@/lib/stores/seller-scraper-store"
+import { useSellerScraperStore, type SellerScraperStep } from "@/lib/stores/seller-scraper-store"
 import { SellerProductGrid } from "@/components/seller/SellerProductGrid"
 import { GroupingView } from "@/components/seller/GroupingView"
 import { DiffFieldsStep } from "@/components/seller/DiffFieldsStep"
@@ -112,6 +112,7 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
   const store = useSellerScraperStore()
   const [urlInput, setUrlInput] = useState('')
   const [isScrapingUrl, setIsScrapingUrl] = useState(false)
+  const [isScrapingRef, setIsScrapingRef] = useState(false)
   const [sessions, setSessions] = useState<SellerScrapeSession[]>([])
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
   const [deepScrapeQueue, setDeepScrapeQueue] = useState<string[]>([])
@@ -167,6 +168,28 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
       toast.error(err instanceof Error ? err.message : 'Błąd scrape')
     } finally {
       setIsScrapingUrl(false)
+    }
+  }
+
+  // ─── Scrape reference product URL ───
+  const handleScrapeReferenceUrl = async () => {
+    if (!store.referenceProductUrl.trim()) return
+    setIsScrapingRef(true)
+    try {
+      const res = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: store.referenceProductUrl.trim() }),
+      })
+      const data = await res.json()
+      if (!data.success) throw new Error(data.error ?? 'Błąd scrapowania')
+      const desc = data.data?.description ?? ''
+      store.setReferenceProductDescription(desc)
+      toast.success('Pobrano opis referencyjny')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Błąd scrapowania URL')
+    } finally {
+      setIsScrapingRef(false)
     }
   }
 
@@ -370,6 +393,44 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
       return
     }
 
+    // AI fallback: if any item is missing attributes for selected attr: diff fields, extract from title
+    const attrDiffFields = store.selectedDiffFields.filter(f => f.startsWith('attr:'))
+    if (attrDiffFields.length > 0) {
+      const missingAttrListings = groupListings.filter(l => {
+        const attrs = l.deepScrapeData?.attributes ?? {}
+        return attrDiffFields.some(f => {
+          const attrName = f.replace('attr:', '')
+          return !Object.keys(attrs).some(k => k.toLowerCase() === attrName.toLowerCase())
+        })
+      })
+
+      if (missingAttrListings.length > 0) {
+        try {
+          const extractRes = await fetch('/api/ai-extract-variants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              products: missingAttrListings.map(l => ({ id: l.id, name: l.title })),
+              diffFields: attrDiffFields,
+              templateTitle: session.data?.title,
+            }),
+          })
+          if (extractRes.ok) {
+            const { extractions } = await extractRes.json() as { extractions: Array<{ productId: string; values: Record<string, string> }> }
+            const extractionMap = new Map(extractions.map(e => [e.productId, e.values]))
+            for (const l of missingAttrListings) {
+              const extracted = extractionMap.get(l.id)
+              if (extracted && l.deepScrapeData) {
+                l.deepScrapeData.attributes = { ...l.deepScrapeData.attributes, ...extracted }
+              }
+            }
+          }
+        } catch {
+          // Non-fatal — proceed without AI-extracted attributes
+        }
+      }
+    }
+
     const items = groupListings.map(l => ({
       productData: l.deepScrapeData,
       label: l.title,
@@ -435,6 +496,7 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
           productData={firstProduct}
           onClose={() => store.setStep('diff-fields')}
           onSaveTemplate={handleSaveTemplate}
+          referenceDescription={store.referenceProductDescription || undefined}
         />
       </div>
     )
@@ -460,7 +522,7 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
                   grouping: 'grid', 'diff-fields': 'grouping', template: 'diff-fields',
                   'desc-template': 'template', review: 'desc-template',
                 }
-                store.setStep((prevSteps[store.step] ?? 'input') as import('@/lib/stores/seller-scraper-store').SellerScraperStep)
+                store.setStep((prevSteps[store.step] ?? 'input') as SellerScraperStep)
               }}
             >
               <ChevronLeft className="size-4 mr-1" /> Powrót
@@ -494,6 +556,40 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
               <Button onClick={handleStartScrape} disabled={isScrapingUrl || !urlInput.trim()}>
                 {isScrapingUrl ? <Loader2 className="size-4 animate-spin" /> : 'Scrapuj'}
               </Button>
+            </div>
+
+            {/* Reference product URL */}
+            <div className="rounded-lg border border-border bg-muted/20 p-4 space-y-2">
+              <div>
+                <p className="text-sm font-medium">Referencyjny produkt (opcjonalnie)</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Wklej URL produktu, którego opis posłuży jako wzorzec stylu dla AI.
+                  Np. dobrze opisany peszel z Allegro → AI wygeneruje opisy w podobnym stylu.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={store.referenceProductUrl}
+                  onChange={e => store.setReferenceProductUrl(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleScrapeReferenceUrl()}
+                  placeholder="https://allegro.pl/oferta/..."
+                  className="flex-1 border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <Button
+                  variant="outline"
+                  onClick={handleScrapeReferenceUrl}
+                  disabled={!store.referenceProductUrl.trim() || isScrapingRef}
+                >
+                  {isScrapingRef ? <Loader2 className="size-4 animate-spin" /> : 'Pobierz opis'}
+                </Button>
+              </div>
+              {store.referenceProductDescription && (
+                <div className="rounded-md bg-green-50 border border-green-200 px-3 py-2">
+                  <p className="text-xs text-green-700 font-medium">✓ Opis referencyjny pobrany ({store.referenceProductDescription.length} znaków)</p>
+                  <p className="text-xs text-green-600 mt-0.5 line-clamp-2">{store.referenceProductDescription.slice(0, 200)}...</p>
+                </div>
+              )}
             </div>
 
             {/* Session history */}

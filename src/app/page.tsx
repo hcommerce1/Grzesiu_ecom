@@ -14,6 +14,7 @@ import { AllegroAuthGate } from "@/components/AllegroAuthGate"
 import { ScrapeHistoryPanel } from "@/components/ScrapeHistoryPanel"
 import { useScrapeHistoryStore, type ScrapeHistoryEntry } from "@/lib/stores/scrape-history-store"
 import { useUserStore } from "@/lib/stores/user-store"
+import { useEditProductsStore } from "@/lib/stores/edit-products-store"
 import { MassListingTab } from "@/components/MassListingTab"
 import type { ScrapeResponse } from "@/lib/types"
 
@@ -36,6 +37,23 @@ export default function Home() {
   useEffect(() => {
     fetchUser()
   }, [])
+
+  useEffect(() => {
+    if (user === 'grzesiek' && tab === 'mass-listing') {
+      setTab('edytuj')
+    }
+  }, [user, tab])
+
+  useEffect(() => {
+    function handleEditProduct(e: Event) {
+      const productId = (e as CustomEvent<{ productId: string }>).detail.productId;
+      if (!productId) return;
+      setTab('edytuj');
+      useEditProductsStore.getState().startBatch([productId]);
+    }
+    window.addEventListener('sheets:edit-product', handleEditProduct);
+    return () => window.removeEventListener('sheets:edit-product', handleEditProduct);
+  }, []);
 
   const handleLoadFromHistory = (entry: ScrapeHistoryEntry) => {
     const item: ScrapedItem = {
@@ -189,18 +207,20 @@ export default function Home() {
             Google Sheets
           </button>
 
-          <button
-            onClick={() => setTab("mass-listing")}
-            className={cn(
-              "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
-              tab === "mass-listing"
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <Layers className="size-4" />
-            Wystawianie masowe
-          </button>
+          {user !== 'grzesiek' && (
+            <button
+              onClick={() => setTab("mass-listing")}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                tab === "mass-listing"
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Layers className="size-4" />
+              Wystawianie masowe
+            </button>
+          )}
 
           <div className="flex-1" />
         </div>

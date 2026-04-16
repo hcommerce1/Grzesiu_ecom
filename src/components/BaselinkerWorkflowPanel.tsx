@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X, CheckCircle2, ImageIcon, AlertCircle } from "lucide-react"
+import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X, CheckCircle2, ImageIcon, AlertCircle, Link2 } from "lucide-react"
 import { CategorySelector } from "./CategorySelector"
 import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
 import { ApprovalDrawer } from "./ApprovalDrawer"
@@ -42,6 +42,10 @@ interface Props {
   onSheetDone?: (blProductId: number) => void
   /** When provided: last step becomes "Zapisz jako template" instead of "Wyślij" */
   onSaveTemplate?: (session: ProductSession) => void
+  /** Called after successful BaseLinker submission — receives the completed session */
+  onSubmitSuccess?: (session: ProductSession) => void
+  /** Reference product description for context (scraped from a reference URL) */
+  referenceDescription?: string
 }
 
 type Step = "inventory" | "category" | "images" | "fields-params" | "preview" | "approval"
@@ -60,7 +64,7 @@ function getApprovalLabel(onSaveTemplate?: (session: ProductSession) => void): s
   return onSaveTemplate ? "Zapisz template" : "Wyślij"
 }
 
-export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone, onSaveTemplate }: Props) {
+export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone, onSaveTemplate, onSubmitSuccess, referenceDescription }: Props) {
   const [currentStep, setCurrentStep] = useState<Step>("inventory")
   const [session, setSession] = useState<ProductSession | null>(null)
   const [blCache, setBlCache] = useState<BLCache | null>(null)
@@ -100,11 +104,89 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   const [editableFieldValues, setEditableFieldValues] = useState<Record<string, string>>({})
 
   // Tax rate
-  const [localTaxRate, setLocalTaxRate] = useState<number | string>(23)
+  const [localTaxRate, setLocalTaxRate] = useState<number | string>(productData.taxRate ?? 23)
 
   // Bundle
-  const [isBundle, setIsBundle] = useState(editProductType === 'bundle')
-  const [bundleProducts, setBundleProducts] = useState<Record<string, number>>({})
+  const [isBundle, setIsBundle] = useState(productData.isBundle ?? editProductType === 'bundle')
+  const [bundleProducts, setBundleProducts] = useState<Record<string, number>>(productData.bundleProducts ?? {})
+
+  // Reference URL scraping (for edit mode)
+  const [referenceUrl, setReferenceUrl] = useState(productData.url ?? '')
+  const [scrapeLoading, setScrapeLoading] = useState(false)
+
+  const handleScrapeReferenceUrl = async () => {
+    if (!referenceUrl.trim()) return
+    setScrapeLoading(true)
+    try {
+      const scrapeRes = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: referenceUrl.trim() }),
+      })
+      if (!scrapeRes.ok) throw new Error(await scrapeRes.text())
+      const scraped = await scrapeRes.json()
+
+      if (!scraped.success) {
+        throw new Error(scraped.error ?? 'Scraping failed')
+      }
+
+      const scrapedData = scraped.data as import('@/lib/types').ProductData
+
+      // Run ai-autofill with scraped attributes
+      const autofillRes = await fetch('/api/ai-autofill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productData: { ...productData, attributes: { ...productData.attributes, ...(scrapedData.attributes ?? {}) } },
+          parameters: parameters,
+          alreadyFilled: localParameters,
+        }),
+      })
+      if (autofillRes.ok) {
+        const autofillData = await autofillRes.json()
+        const filled: Record<string, string | string[]> = autofillData.filled ?? {}
+        if (Object.keys(filled).length > 0) {
+          setLocalParameters(prev => {
+            const merged = { ...prev, ...filled }
+            updateSession({ filledParameters: merged })
+            return merged
+          })
+        }
+        if (autofillData.details?.length > 0) {
+          setAiFillResults(autofillData.details)
+        }
+      }
+
+      // Apply scraped images to imagesMeta
+      if (scrapedData.images?.length) {
+        const newMetas: ImageMeta[] = scrapedData.images.map((url, idx) => ({
+          url,
+          order: imagesMeta.length + idx,
+          removed: false,
+          aiDescription: '',
+          aiConfidence: 0,
+          userDescription: '',
+          isFeatureImage: idx === 0 && imagesMeta.length === 0,
+          features: [],
+        }))
+        const merged = [...imagesMeta, ...newMetas]
+        setImagesMeta(merged)
+        updateSession({ imagesMeta: merged })
+      }
+
+      // Fill description if available
+      if (scrapedData.description && session?.data) {
+        updateSession({ data: { ...session.data, description: scrapedData.description } })
+      }
+
+      const count = scrapedData.images?.length ?? 0
+      toast.success(`Pobrano dane z URL${count > 0 ? ` (${count} zdjęć)` : ''}`)
+    } catch (e) {
+      toast.error(`Błąd scrapowania: ${String(e)}`)
+    } finally {
+      setScrapeLoading(false)
+    }
+  }
 
   // Debounced session sync refs
   const paramSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -178,7 +260,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   )
 
   const handleChatSectionAdd = useCallback(
-    (newSection: { id: string; heading: string; bodyHtml: string; layout: 'image-text' | 'images-only'; imageUrls: string[] }, afterSectionId?: string) => {
+    (newSection: { id: string; heading: string; bodyHtml: string; layout: 'image-text' | 'images-only' | 'text-only'; imageUrls: string[] }, afterSectionId?: string) => {
       if (!generatedDescription) return
       const sections = [...generatedDescription.sections]
       if (afterSectionId) {
@@ -196,7 +278,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   )
 
   const handleChatSectionLayoutChange = useCallback(
-    (sectionId: string, layout: 'image-text' | 'images-only') => {
+    (sectionId: string, layout: 'image-text' | 'images-only' | 'text-only') => {
       if (!generatedDescription) return
       const updated = generatedDescription.sections.map(s =>
         s.id === sectionId ? { ...s, layout } : s
@@ -260,27 +342,48 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       .then((r) => r.json())
       .then((d) => {
         setSession(d.session)
-        // Przywroc dane z sesji jesli istnieja
-        if (d.session?.imagesMeta) {
-          setImagesMeta(d.session.imagesMeta)
-        } else if (productData.images.length > 0) {
-          setImagesMeta(productData.images.map((url, i) => ({
-            url, order: i, removed: false, aiDescription: '',
-            aiConfidence: 0, userDescription: '', isFeatureImage: false, features: [],
-          })))
+        // Sprawdź czy sesja dotyczy tego samego produktu
+        const sessionMatchesProduct = d.session && (
+          editProductId
+            ? d.session.product_id === editProductId
+            : d.session.data?.url === productData.url
+        )
+        // Przywroc dane z sesji tylko jesli dotycza tego samego produktu
+        if (sessionMatchesProduct) {
+          if (d.session.imagesMeta) {
+            setImagesMeta(d.session.imagesMeta)
+          }
+          if (d.session.generatedTitle) { setLocalTitle(d.session.generatedTitle); setIsTitleGenerated(true) }
+          if (d.session.titleCandidates) setTitleCandidates(d.session.titleCandidates)
+          if (d.session.generatedDescription) setGeneratedDescription(d.session.generatedDescription)
+          if (d.session.descriptionInputSnapshot) setDescriptionSnapshot(d.session.descriptionInputSnapshot)
+          if (d.session.filledParameters) setLocalParameters(d.session.filledParameters)
+          if (d.session.allegroParameters) setParameters(d.session.allegroParameters)
+          if (d.session.aiFillResults?.length) { setAiFillResults(d.session.aiFillResults); setAiFillStatus('done') }
+          if (d.session.extraFieldValues) setExtraFieldValues(d.session.extraFieldValues)
+          if (d.session.editableFieldValues) setEditableFieldValues(d.session.editableFieldValues)
+          if (d.session.tax_rate != null) setLocalTaxRate(d.session.tax_rate)
+          if (d.session.is_bundle != null) setIsBundle(d.session.is_bundle)
+          if (d.session.bundle_products) setBundleProducts(d.session.bundle_products)
         }
-        if (d.session?.generatedTitle) { setLocalTitle(d.session.generatedTitle); setIsTitleGenerated(true) }
-        if (d.session?.titleCandidates) setTitleCandidates(d.session.titleCandidates)
-        if (d.session?.generatedDescription) setGeneratedDescription(d.session.generatedDescription)
-        if (d.session?.descriptionInputSnapshot) setDescriptionSnapshot(d.session.descriptionInputSnapshot)
-        if (d.session?.filledParameters) setLocalParameters(d.session.filledParameters)
-        if (d.session?.allegroParameters) setParameters(d.session.allegroParameters)
-        if (d.session?.aiFillResults?.length) { setAiFillResults(d.session.aiFillResults); setAiFillStatus('done') }
-        if (d.session?.extraFieldValues) setExtraFieldValues(d.session.extraFieldValues)
-        if (d.session?.editableFieldValues) setEditableFieldValues(d.session.editableFieldValues)
-        if (d.session?.tax_rate != null) setLocalTaxRate(d.session.tax_rate)
-        if (d.session?.is_bundle != null) setIsBundle(d.session.is_bundle)
-        if (d.session?.bundle_products) setBundleProducts(d.session.bundle_products)
+        // Zdjęcia inicjalizuj z produktu jeśli sesja nie pasuje lub nie ma imagesMeta
+        if (!sessionMatchesProduct || !d.session?.imagesMeta) {
+          if (productData.images.length > 0) {
+            setImagesMeta(productData.images.map((url, i) => ({
+              url, order: i, removed: false, aiDescription: '',
+              aiConfidence: 0, userDescription: '', isFeatureImage: false, features: [],
+            })))
+          }
+        }
+        // Restore step — only for sheet products (resume flow) AND same product
+        if (sessionMatchesProduct && d.session?.currentStep && sheetProductId) {
+          const step = d.session.currentStep as Step
+          const idx = STEPS.findIndex(s => s.key === step)
+          if (idx >= 0) {
+            setCurrentStep(step)
+            setMaxVisitedStep(idx)
+          }
+        }
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -406,7 +509,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         ...(sheetMeta ? { sheetMeta } : {}),
         fieldSelection: sheetFieldOverrides,
       })
-      setCurrentStep("category")
+      goToStep("category")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Błąd")
     } finally {
@@ -493,7 +596,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         ...(sheetProductId ? { sheetProductId } : {}),
         ...(sheetMeta ? { sheetMeta } : {}),
       })
-      setCurrentStep("images")
+      goToStep("images")
 
       // Nieblokujący AI auto-fill w tle
       const fetchedParams: AllegroParameter[] = paramsData.parameters ?? []
@@ -507,6 +610,9 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             productData,
             parameters: fetchedParams,
             alreadyFilled: autoFilledParams,
+            imageMeta: imagesMeta
+              .filter(m => !m.removed && (m.aiDescription || (m.features && m.features.length > 0)))
+              .map(m => ({ url: m.url, aiDescription: m.aiDescription, features: m.features })),
           }),
         })
           .then(r => r.json())
@@ -619,7 +725,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         if (!selectedInventoryId) errors.push('Wybierz magazyn')
         break
       case 'category':
-        if (!session?.allegroCategory) errors.push('Wybierz kategorię Allegro')
+        if (!session?.allegroCategory && !editProductId) errors.push('Wybierz kategorię Allegro')
         break
       case 'images': {
         const activeImages = imagesMeta.filter(m => !m.removed)
@@ -634,11 +740,18 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     return { valid: errors.length === 0, errors }
   }
 
+  function goToStep(step: Step) {
+    setCurrentStep(step)
+    if (sheetProductId) {
+      updateSession({ currentStep: step }).catch(() => {/* non-fatal */})
+    }
+  }
+
   function navigateToStep(targetIndex: number) {
     setValidationErrors([])
     // Going backwards — always allowed if visited before
     if (targetIndex <= currentStepIndex) {
-      setCurrentStep(STEPS[targetIndex].key)
+      goToStep(STEPS[targetIndex].key)
       return
     }
     // Going forward — validate each step in between
@@ -649,7 +762,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         return
       }
     }
-    setCurrentStep(STEPS[targetIndex].key)
+    goToStep(STEPS[targetIndex].key)
   }
 
   function renderStep() {
@@ -752,7 +865,43 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 Ładowanie parametrów...
               </div>
             )}
+            {/* URL produktu-wzorca (opcjonalne) — ukryj gdy dane już załadowane z URL */}
+            {!productData.url && (
+              <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Link2 className="size-3.5" />
+                  Pobierz dane z URL (opcjonalne)
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={referenceUrl}
+                    onChange={e => setReferenceUrl(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleScrapeReferenceUrl()}
+                    placeholder="https://allegro.pl/oferta/..."
+                    className="flex-1 text-xs border border-border rounded px-2.5 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleScrapeReferenceUrl}
+                    disabled={!referenceUrl.trim() || scrapeLoading}
+                    className="text-xs h-auto py-1.5 px-3 shrink-0"
+                  >
+                    {scrapeLoading ? <Loader2 className="size-3.5 animate-spin" /> : 'Pobierz →'}
+                  </Button>
+                </div>
+              </div>
+            )}
             <CategorySelector onSelect={handleCategorySelect} onReset={handleCategoryReset} selectedCategory={session?.allegroCategory} productData={productData} />
+            {editProductId && !session?.allegroCategory && (
+              <button
+                onClick={() => goToStep('images')}
+                className="text-sm text-blue-600 hover:underline mt-1 block"
+              >
+                Pomiń — produkt ma już kategorię w BaseLinker →
+              </button>
+            )}
           </div>
         )
 
@@ -768,7 +917,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               }}
             />
             <Button
-              onClick={() => setCurrentStep("fields-params")}
+              onClick={() => goToStep("fields-params")}
               disabled={imagesMeta.filter(i => !i.removed).length === 0 && productData.images.length === 0}
               className="w-full"
             >
@@ -806,8 +955,9 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               editableFieldValues={editableFieldValues}
               onEditableFieldValueChange={handleEditableFieldValueChange}
               manufacturers={(blCache?.manufacturers ?? []) as { manufacturer_id: number; name: string }[]}
+              isEditMode={!!editProductId}
             />
-            <Button onClick={() => setCurrentStep("preview")} className="w-full gap-2">
+            <Button onClick={() => goToStep("preview")} className="w-full gap-2">
               <Eye className="size-4" />
               Podgląd i opis →
             </Button>
@@ -850,6 +1000,14 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               onParameterChange={handleParameterChangeFromChat}
               targetedSections={targetedSections}
               onSectionTargetToggle={toggleTargetedSection}
+              bundleContext={productData.bundleContextText}
+              referenceDescription={referenceDescription}
+              originalDescription={productData.description}
+              price={productData.price}
+              currency={productData.currency}
+              ean={productData.ean}
+              sku={productData.sku}
+              productUrl={productData.url}
               previewSlot={
                 generatedDescription?.fullHtml ? (
                   <PreviewContainer
@@ -857,6 +1015,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                     fullHtml={generatedDescription.fullHtml}
                     imagesMeta={imagesMeta}
                     parameters={localParameters}
+                    parameterDefs={session?.allegroParameters ?? []}
                   />
                 ) : null
               }
@@ -872,7 +1031,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                     images: imagesMeta.filter(i => !i.removed).map(i => i.url),
                   },
                 })
-                setCurrentStep("approval")
+                goToStep("approval")
               }}
               className="w-full"
             >
@@ -1032,12 +1191,20 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               }
               productData={{
                 title: productData.title,
-                description: '',
+                description: productData.description,
                 attributes: productData.attributes,
               }}
+              originalDescription={productData.description}
+              price={productData.price}
+              currency={productData.currency}
+              ean={productData.ean}
+              sku={productData.sku}
+              productUrl={productData.url}
               targetedSections={targetedSections}
               onRemoveTargetedSection={(id) => setTargetedSections(prev => prev.filter(s => s.id !== id))}
               onClearTargets={() => setTargetedSections([])}
+              stanTechniczny={sheetMeta?.stanTechniczny}
+              uwagi={[sheetMeta?.uwagiKrotkie, sheetMeta?.uwagiMagazynowe].filter(Boolean).join(' | ')}
               className="flex flex-col h-full"
               style={{ height: '100%' }}
             />
@@ -1052,7 +1219,11 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           onApproved={async (id) => {
             setSuccessId(id)
             setShowApproval(false)
-            setCurrentStep("approval")
+            goToStep("approval")
+
+            if (onSubmitSuccess && session) {
+              onSubmitSuccess(session)
+            }
 
             if (sheetProductId) {
               try {

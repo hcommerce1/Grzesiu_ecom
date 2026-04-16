@@ -59,6 +59,12 @@ function getDb(): Database.Database {
   if (!cols.some((c) => c.name === 'extra_columns')) {
     _db.exec('ALTER TABLE sheet_products ADD COLUMN extra_columns TEXT');
   }
+  if (!cols.some((c) => c.name === 'scraped_data')) {
+    _db.exec('ALTER TABLE sheet_products ADD COLUMN scraped_data TEXT');
+  }
+  if (!cols.some((c) => c.name === 'workflow_session')) {
+    _db.exec('ALTER TABLE sheet_products ADD COLUMN workflow_session TEXT');
+  }
 
   // ─── Product list cache tables ───
   _db.exec(`
@@ -198,6 +204,8 @@ export interface SheetProductRow {
   bl_product_id: string | null;
   error_message: string | null;
   category_id: string | null;
+  scraped_data: string | null;
+  workflow_session: string | null;
   last_synced: string | null;
   created_at: string;
   updated_at: string;
@@ -394,7 +402,7 @@ export function updateProduct(id: string, patch: ProductPatch): SheetProductRow 
 export function setProductStatus(
   id: string,
   status: SheetProductStatus,
-  extra?: { error_message?: string; bl_product_id?: string }
+  extra?: { error_message?: string; bl_product_id?: string; scraped_data?: string }
 ): void {
   const db = getDb();
   const sets = ["status = @status", "updated_at = datetime('now')"];
@@ -408,12 +416,28 @@ export function setProductStatus(
     sets.push('bl_product_id = @bl_product_id');
     params.bl_product_id = extra.bl_product_id;
   }
+  if (extra?.scraped_data !== undefined) {
+    sets.push('scraped_data = @scraped_data');
+    params.scraped_data = extra.scraped_data;
+  }
 
   db.prepare(`UPDATE sheet_products SET ${sets.join(', ')} WHERE id = @id`).run(params);
 }
 
 export function markDone(id: string, blProductId: string): void {
   setProductStatus(id, 'done', { bl_product_id: blProductId, error_message: undefined });
+}
+
+export function saveWorkflowSession(id: string, sessionJson: string): void {
+  const db = getDb();
+  db.prepare(`UPDATE sheet_products SET workflow_session = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(sessionJson, id);
+}
+
+export function getWorkflowSession(id: string): string | null {
+  const db = getDb();
+  const row = db.prepare('SELECT workflow_session FROM sheet_products WHERE id = ?').get(id) as { workflow_session: string | null } | undefined;
+  return row?.workflow_session ?? null;
 }
 
 export function resetAllProducts(): void {
@@ -635,13 +659,14 @@ export interface BatchItemInput {
   label?: string;
   thumbnailUrl?: string;
   sourceListingId?: string;
+  blProductId?: string; // Set for edit-mode batch jobs
 }
 
 export function createBatchJobItems(jobId: string, items: BatchItemInput[]): void {
   const db = getDb();
   const insert = db.prepare(`
-    INSERT INTO batch_job_items (id, batch_job_id, order_index, product_data, label, thumbnail_url, source_listing_id)
-    VALUES (@id, @batch_job_id, @order_index, @product_data, @label, @thumbnail_url, @source_listing_id)
+    INSERT INTO batch_job_items (id, batch_job_id, order_index, product_data, label, thumbnail_url, source_listing_id, bl_product_id)
+    VALUES (@id, @batch_job_id, @order_index, @product_data, @label, @thumbnail_url, @source_listing_id, @bl_product_id)
   `);
   const tx = db.transaction(() => {
     items.forEach((item, i) => {
@@ -653,6 +678,7 @@ export function createBatchJobItems(jobId: string, items: BatchItemInput[]): voi
         label: item.label ?? null,
         thumbnail_url: item.thumbnailUrl ?? null,
         source_listing_id: item.sourceListingId ?? null,
+        bl_product_id: item.blProductId ?? null,
       });
     });
   });

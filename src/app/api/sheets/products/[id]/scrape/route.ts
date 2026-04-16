@@ -7,6 +7,33 @@ export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
 
 /**
+ * GET /api/sheets/products/[id]/scrape
+ * Returns cached scraped data if available (for resume without re-scraping).
+ */
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const product = getProductById(id);
+
+  if (!product || !product.scraped_data) {
+    return NextResponse.json({ cached: false });
+  }
+
+  try {
+    const parsed = JSON.parse(product.scraped_data);
+    let workflowSession = null;
+    if (product.workflow_session) {
+      try { workflowSession = JSON.parse(product.workflow_session); } catch { /* ignore */ }
+    }
+    return NextResponse.json({ cached: true, ...parsed, workflowSession });
+  } catch {
+    return NextResponse.json({ cached: false });
+  }
+}
+
+/**
  * POST /api/sheets/products/[id]/scrape
  * Scrape the product URL and translate, updating status along the way.
  */
@@ -61,17 +88,29 @@ export async function POST(
       // Continue with untranslated data — not a fatal error
     }
 
-    // Enrich with sheet data: EAN, SKU, weight, dimensions, location
-    if (product.ean && !translatedData.ean) translatedData.ean = product.ean;
-    if (product.sku && !translatedData.sku) translatedData.sku = product.sku;
+    // Enrich with sheet data: EAN, SKU always take priority over scraped values
+    if (product.ean) translatedData.ean = product.ean;
+    if (product.sku) translatedData.sku = product.sku;
 
-    // Store sheet-specific data in attributes for payload building
+    // Zdjęcie z kolumny R (zdjęcie uszkodzenia) jako pierwsze zdjęcie
+    if (product.zdjecie) {
+      translatedData.images = [product.zdjecie, ...(translatedData.images ?? [])];
+    }
+
+    // Store sheet-specific data in attributes for payload building and AI autofill
     const attrs = translatedData.attributes ?? {};
     if (product.waga) attrs['waga'] = product.waga;
     if (product.dlugosc) attrs['dlugosc'] = product.dlugosc;
     if (product.szerokosc) attrs['szerokosc'] = product.szerokosc;
     if (product.wysokosc) attrs['wysokosc'] = product.wysokosc;
     if (product.lokalizacja) attrs['lokalizacja'] = product.lokalizacja;
+    // Inject sheet fields so AI autofill can see them when matching Allegro parameters
+    if (product.stan_techniczny) attrs['Stan Techniczny'] = product.stan_techniczny;
+    if (product.kolor) attrs['Kolor'] = product.kolor;
+    if (product.opakowanie) attrs['Opakowanie'] = product.opakowanie;
+    if (product.rozmiar_gabaryt) attrs['Rozmiar'] = product.rozmiar_gabaryt;
+    if (product.model) attrs['Model'] = product.model;
+    if (product.uwagi_krotkie) attrs['Uwagi'] = product.uwagi_krotkie;
 
     // Inject extra columns from dynamic sheet reading into attributes
     let parsedExtras: Record<string, string> = {};
@@ -90,30 +129,33 @@ export async function POST(
 
     translatedData.attributes = attrs;
 
-    // Update status
-    setProductStatus(id, 'in_progress');
+    const sheetMeta = {
+      uwagiKrotkie: product.uwagi_krotkie ?? '',
+      uwagiMagazynowe: product.uwagi_magazynowe ?? '',
+      zdjecie: product.zdjecie ?? '',
+      paleta: product.paleta ?? '',
+      stanTechniczny: product.stan_techniczny ?? '',
+      kolor: product.kolor ?? '',
+      opakowanie: product.opakowanie ?? '',
+      rozmiarGabaryt: product.rozmiar_gabaryt ?? '',
+      model: product.model ?? '',
+      waga: product.waga ?? '',
+      dlugosc: product.dlugosc ?? '',
+      szerokosc: product.szerokosc ?? '',
+      wysokosc: product.wysokosc ?? '',
+      ...parsedExtras,
+    };
+
+    // Save scraped data to DB so resume doesn't need to re-scrape
+    const scraped_data = JSON.stringify({ data: translatedData, sheetMeta, translationFailed });
+    setProductStatus(id, 'in_progress', { scraped_data });
 
     return NextResponse.json({
       success: true,
       translationFailed,
       data: translatedData,
       originalData,
-      sheetMeta: {
-        uwagiKrotkie: product.uwagi_krotkie ?? '',
-        uwagiMagazynowe: product.uwagi_magazynowe ?? '',
-        zdjecie: product.zdjecie ?? '',
-        paleta: product.paleta ?? '',
-        stanTechniczny: product.stan_techniczny ?? '',
-        kolor: product.kolor ?? '',
-        opakowanie: product.opakowanie ?? '',
-        rozmiarGabaryt: product.rozmiar_gabaryt ?? '',
-        model: product.model ?? '',
-        waga: product.waga ?? '',
-        dlugosc: product.dlugosc ?? '',
-        szerokosc: product.szerokosc ?? '',
-        wysokosc: product.wysokosc ?? '',
-        ...parsedExtras,
-      },
+      sheetMeta,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown scraping error';

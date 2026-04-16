@@ -16,6 +16,7 @@ import {
   ChevronsUpDown,
   SlidersHorizontal,
   X,
+  FolderOpen,
 } from "lucide-react"
 // import { useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
@@ -31,10 +32,16 @@ import {
   FilterableSelect,
 } from "@/components/ui/select"
 import { BaselinkerWorkflowPanel } from "./BaselinkerWorkflowPanel"
+import { EditBatchConfigModal } from "./EditBatchConfigModal"
+import { EditBatchApplyModal } from "./EditBatchApplyModal"
+import { BatchImageAssignModal } from "./BatchImageAssignModal"
 import { cn } from "@/lib/utils"
 import { useBLProductList } from "@/lib/hooks/use-bl-products"
 import { useEditProductsStore, type SortField } from "@/lib/stores/edit-products-store"
-import type { BLProductListItem, BLProductType, ProductData } from "@/lib/types"
+import { useUserStore } from "@/lib/stores/user-store"
+import { useBatchJobPoller } from "@/hooks/useBatchJobPoller"
+import type { BLProductListItem, BLProductType, ProductData, ProductSession } from "@/lib/types"
+import type { ExtractionResult } from "@/app/api/ai-extract-variants/route"
 
 // ─── Constants ───
 
@@ -83,10 +90,23 @@ export function EditProductsTab() {
     startBatch,
     advanceBatch,
     cancelBatch,
+    editBatchConfig,
+    setEditBatchConfig,
+    showApplyModal,
+    setShowApplyModal,
+    completedTemplateSession,
+    setCompletedTemplateSession,
+    completedDescriptionTemplate,
+    completedTitleTemplate,
+    editBatchJobId,
+    setEditBatchJobId,
     sortField,
     sortDirection,
     setSort,
   } = useEditProductsStore()
+
+  const { user } = useUserStore()
+  const isGrzesiek = user === 'grzesiek'
 
   // ─── Filtering ───
 
@@ -245,8 +265,24 @@ export function EditProductsTab() {
   const [batchProductData, setBatchProductData] = useState<ProductData | null>(null)
   const [batchLoading, setBatchLoading] = useState(false)
   const fetchingRef = useRef(false)
+  const productsRef = useRef(products)
+  const [showImageAssignModal, setShowImageAssignModal] = useState(false)
+  const [showConfigModal, setShowConfigModal] = useState(false)
+  const [applyExtractions, setApplyExtractions] = useState<ExtractionResult[]>([])
+  const [extractionsLoading, setExtractionsLoading] = useState(false)
+
+  // Poller for the auto-apply batch job
+  const batchPoller = useBatchJobPoller(editBatchJobId, {
+    autoStart: true,
+    onDone: () => {
+      // Job complete — stay on progress view, user clicks "Zakończ"
+    },
+  })
 
   const currentBatchId = batchQueue ? batchQueue[batchIndex] : null
+
+  // Keep productsRef in sync without triggering fetch re-runs
+  useEffect(() => { productsRef.current = products }, [products])
 
   // Fetch product details when batch moves to next product
   useEffect(() => {
@@ -255,33 +291,83 @@ export function EditProductsTab() {
     setBatchLoading(true)
     setBatchProductData(null)
 
-    fetch("/api/baselinker", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        method: "getInventoryProductsData",
-        parameters: { inventory_id: inventoryId, products: [currentBatchId] },
-      }),
-    })
-      .then((res) => res.json())
-      .then((data) => {
+    const loadProduct = async () => {
+      try {
+        const res = await fetch("/api/baselinker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            method: "getInventoryProductsData",
+            parameters: { inventory_id: inventoryId, products: [currentBatchId] },
+          }),
+        })
+        const data = await res.json()
         const productData = data.products?.[currentBatchId]
+
         if (productData) {
           const images = productData.images
             ? Object.values(productData.images as Record<string, string>)
             : []
+
+          // Map features → attributes
+          const rawFeatures: Array<{ name: string; values: Array<{ name: string }> }> =
+            productData.features ?? []
+          const attributes: Record<string, string> = {}
+          for (const f of rawFeatures) {
+            attributes[f.name] = f.values?.map((v) => v.name).join(', ') ?? ''
+          }
+
+          // Bundle data
+          const isBundle = productData.is_bundle === 1 || productData.is_bundle === true
+          const bundleProducts: Record<string, number> = {}
+          if (productData.bundles) {
+            for (const b of productData.bundles as Array<{ product_id: string | number; quantity: number }>) {
+              bundleProducts[String(b.product_id)] = b.quantity
+            }
+          }
+
+          // Fetch bundle component context for AI
+          let bundleContextText: string | undefined
+          const bundleIds = Object.keys(bundleProducts)
+          if (isBundle && bundleIds.length > 0) {
+            try {
+              const compRes = await fetch("/api/baselinker", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  method: "getInventoryProductsData",
+                  parameters: { inventory_id: inventoryId, products: bundleIds },
+                }),
+              })
+              const compData = await compRes.json()
+              const parts: string[] = []
+              for (const [compId, comp] of Object.entries(compData.products ?? {})) {
+                const c = comp as Record<string, unknown>
+                const compFeatures = (c.features as Array<{ name: string; values: Array<{ name: string }> }> ?? [])
+                const compAttrs = compFeatures.map(f => `${f.name}: ${f.values?.map(v => v.name).join(', ')}`).join('; ')
+                parts.push(`Składnik (ID: ${compId}): ${c.name ?? ''}. Opis: ${String(c.description ?? '').slice(0, 200)}. Atrybuty: ${compAttrs || '(brak)'}`)
+              }
+              if (parts.length > 0) bundleContextText = parts.join('\n')
+            } catch {
+              // Bundle context is best-effort
+            }
+          }
+
           setBatchProductData({
             title: productData.name ?? "",
             images,
             description: productData.description ?? "",
-            attributes: {},
+            attributes,
             url: "",
             ean: productData.ean ?? undefined,
             sku: productData.sku ?? undefined,
+            isBundle,
+            bundleProducts,
+            taxRate: productData.tax_rate ?? 23,
+            bundleContextText,
           })
         } else {
-          // Fallback: use list data
-          const listItem = products.find((p) => p.id === currentBatchId)
+          const listItem = productsRef.current.find((p) => p.id === currentBatchId)
           setBatchProductData({
             title: listItem?.name ?? "",
             images: listItem?.thumbnailUrl ? [listItem.thumbnailUrl] : [],
@@ -292,10 +378,8 @@ export function EditProductsTab() {
             sku: listItem?.sku ?? undefined,
           })
         }
-      })
-      .catch(() => {
-        // Fallback to list data on error
-        const listItem = products.find((p) => p.id === currentBatchId)
+      } catch {
+        const listItem = productsRef.current.find((p) => p.id === currentBatchId)
         setBatchProductData({
           title: listItem?.name ?? "",
           images: listItem?.thumbnailUrl ? [listItem.thumbnailUrl] : [],
@@ -305,12 +389,15 @@ export function EditProductsTab() {
           ean: listItem?.ean ?? undefined,
           sku: listItem?.sku ?? undefined,
         })
-      })
-      .finally(() => {
+      } finally {
         setBatchLoading(false)
         fetchingRef.current = false
-      })
-  }, [currentBatchId, inventoryId, products])
+      }
+    }
+
+    loadProduct()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentBatchId, inventoryId])
 
   const handleAdvanceBatch = useCallback(async () => {
     fetchingRef.current = false
@@ -329,9 +416,104 @@ export function EditProductsTab() {
   const handleStartEdit = useCallback(async () => {
     const ids = [...selectedIds]
     if (ids.length === 0) return
-    await fetch('/api/product-session', { method: 'DELETE' })
-    startBatch(ids)
+    if (ids.length > 1) {
+      // Show config modal to set up diff fields before starting
+      setShowConfigModal(true)
+    } else {
+      await fetch('/api/product-session', { method: 'DELETE' })
+      startBatch(ids)
+    }
   }, [selectedIds, startBatch])
+
+  const handleConfigConfirm = useCallback(async (config: Parameters<typeof setEditBatchConfig>[0]) => {
+    setShowConfigModal(false)
+    setEditBatchConfig(config)
+    await fetch('/api/product-session', { method: 'DELETE' })
+    startBatch([...selectedIds])
+  }, [selectedIds, startBatch, setEditBatchConfig])
+
+  const handleSubmitSuccess = useCallback(async (session: ProductSession) => {
+    // Called after product 1 is successfully submitted
+    // Save template session and trigger AI extraction for remaining products
+    setCompletedTemplateSession(session)
+
+    const remainingIds = batchQueue ? batchQueue.slice(batchIndex + 1) : []
+    if (remainingIds.length === 0 || !editBatchConfig) {
+      // No remaining products or single-product edit — just advance normally
+      handleAdvanceBatch()
+      return
+    }
+
+    const remainingProducts = remainingIds
+      .map(id => products.find(p => p.id === id))
+      .filter(Boolean) as BLProductListItem[]
+
+    // Fetch extractions for remaining products
+    setExtractionsLoading(true)
+    setShowApplyModal(true)
+    try {
+      const res = await fetch('/api/ai-extract-variants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          products: remainingProducts.map(p => ({ id: p.id, name: p.name, ean: p.ean, sku: p.sku })),
+          diffFields: editBatchConfig.diffFields,
+          templateTitle: session.data?.title,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json() as { extractions: ExtractionResult[] }
+        setApplyExtractions(data.extractions)
+      }
+    } finally {
+      setExtractionsLoading(false)
+    }
+  }, [batchQueue, batchIndex, products, editBatchConfig, setCompletedTemplateSession, setShowApplyModal, handleAdvanceBatch])
+
+  const handleApplyToAll = useCallback(async (correctedExtractions: ExtractionResult[]) => {
+    if (!completedTemplateSession || !editBatchConfig) return
+
+    const remainingIds = batchQueue ? batchQueue.slice(batchIndex + 1) : []
+    const remainingProducts = remainingIds
+      .map(id => products.find(p => p.id === id))
+      .filter(Boolean) as BLProductListItem[]
+
+    // Merge extraction values back into products
+    const productsWithValues = remainingProducts.map(p => {
+      const ext = correctedExtractions.find(e => e.productId === p.id)
+      return {
+        blProductId: p.id,
+        name: p.name,
+        ean: ext?.values['ean'] || p.ean || undefined,
+        sku: ext?.values['sku'] || p.sku || undefined,
+        productType: p.productType,
+        parentId: p.parentId || undefined,
+      }
+    })
+
+    setShowApplyModal(false)
+
+    const res = await fetch('/api/batch-jobs/from-edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        templateSession: completedTemplateSession,
+        remainingProducts: productsWithValues,
+        diffFields: editBatchConfig.diffFields,
+        keepExistingImages: editBatchConfig.keepExistingImages,
+        titleTemplate: completedTitleTemplate,
+        descriptionTemplate: completedDescriptionTemplate,
+        label: `Edycja masowa — ${remainingProducts.length} produktów`,
+      }),
+    })
+
+    if (res.ok) {
+      const { jobId } = await res.json() as { jobId: string }
+      setEditBatchJobId(jobId)
+      // Clear batch queue — we're now in auto-mode
+      cancelBatch()
+    }
+  }, [completedTemplateSession, editBatchConfig, completedTitleTemplate, completedDescriptionTemplate, batchQueue, batchIndex, products, setShowApplyModal, setEditBatchJobId, cancelBatch])
 
   const handleRefresh = useCallback(() => {
     forceRefresh()
@@ -363,6 +545,62 @@ export function EditProductsTab() {
   useEffect(() => {
     setSearchInput(filters.search)
   }, [filters.search])
+
+  // ─── Render: Auto-apply batch job progress ───
+
+  if (editBatchJobId !== null) {
+    const progress = batchPoller.progress
+    const done = batchPoller.status === 'done'
+    const total = progress?.total ?? 0
+    const completed = progress?.done ?? 0
+    const failed = progress?.failed ?? 0
+
+    return (
+      <div className="space-y-6 py-8 max-w-lg mx-auto">
+        <div className="text-center space-y-2">
+          <h3 className="text-lg font-semibold">Edycja masowa w toku...</h3>
+          <p className="text-sm text-muted-foreground">
+            Produkty są aktualizowane automatycznie w BaseLinker.
+          </p>
+        </div>
+
+        <div className="border border-border rounded-xl p-6 space-y-4">
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Postęp</span>
+            <span className="font-medium">{completed}/{total}</span>
+          </div>
+          <div className="w-full bg-muted rounded-full h-2">
+            <div
+              className={cn("h-2 rounded-full transition-all", done ? "bg-green-500" : "bg-primary")}
+              style={{ width: total > 0 ? `${(completed / total) * 100}%` : '0%' }}
+            />
+          </div>
+          {failed > 0 && (
+            <p className="text-sm text-destructive">{failed} produktów z błędem</p>
+          )}
+          {done && (
+            <p className="text-sm text-green-600 font-medium text-center">
+              ✓ Wszystkie produkty zaktualizowane!
+            </p>
+          )}
+        </div>
+
+        <Button
+          onClick={() => {
+            batchPoller.stop()
+            setEditBatchJobId(null)
+            setEditBatchConfig(null)
+            setCompletedTemplateSession(null)
+            deselectAll()
+          }}
+          variant={done ? "default" : "outline"}
+          className="w-full"
+        >
+          {done ? 'Zakończ' : 'Zatrzymaj i wróć do listy'}
+        </Button>
+      </div>
+    )
+  }
 
   // ─── Render: Batch workflow ───
 
@@ -399,6 +637,10 @@ export function EditProductsTab() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setShowImageAssignModal(true)} className="gap-1.5 text-xs">
+              <FolderOpen className="size-3.5" />
+              Wgraj zdjęcia
+            </Button>
             <Button size="sm" variant="ghost" onClick={handleAdvanceBatch} className="gap-1.5 text-xs">
               <SkipForward className="size-3.5" />
               Pomiń
@@ -426,6 +668,7 @@ export function EditProductsTab() {
           editProductType={currentListItem?.productType}
           editParentId={currentListItem?.parentId}
           onClose={handleAdvanceBatch}
+          onSubmitSuccess={batchQueue && batchQueue.length > 1 && batchIndex === 0 ? handleSubmitSuccess : undefined}
         />
       </div>
     )
@@ -433,7 +676,52 @@ export function EditProductsTab() {
 
   // ─── Render: Product browser ───
 
+  const selectedProducts = [...selectedIds].map(id => products.find(p => p.id === id)).filter(Boolean) as BLProductListItem[]
+  const remainingForApply: BLProductListItem[] = batchQueue
+    ? (batchQueue as string[]).slice(batchIndex + 1).map((id: string) => products.find(p => p.id === id)).filter((p): p is BLProductListItem => Boolean(p))
+    : []
+
   return (
+    <>
+    {showConfigModal && (
+      <EditBatchConfigModal
+        products={selectedProducts}
+        onConfirm={handleConfigConfirm}
+        onCancel={() => setShowConfigModal(false)}
+        onManual={() => { setShowConfigModal(false); }}
+      />
+    )}
+    {showImageAssignModal && (
+      <BatchImageAssignModal
+        products={batchQueue ? (batchQueue as string[]).map(id => products.find(p => p.id === id)).filter(Boolean) as BLProductListItem[] : selectedProducts}
+        currentProductId={(batchQueue as string[] | null)?.length === 1 ? currentBatchId ?? undefined : undefined}
+        onAssigned={(assignments) => {
+          // Merge assigned images into batchProductData for the current product
+          if (currentBatchId && assignments[currentBatchId]) {
+            setBatchProductData(prev => prev ? {
+              ...prev,
+              images: [...(prev.images ?? []), ...assignments[currentBatchId].map(m => m.url)],
+            } : prev)
+          }
+          setShowImageAssignModal(false)
+        }}
+        onCancel={() => setShowImageAssignModal(false)}
+      />
+    )}
+    {showApplyModal && (
+      <EditBatchApplyModal
+        products={remainingForApply}
+        diffFields={editBatchConfig?.diffFields ?? []}
+        extractions={applyExtractions}
+        isLoading={extractionsLoading}
+        onApprove={handleApplyToAll}
+        onBack={() => {
+          setShowApplyModal(false)
+          // Continue to next product manually
+          handleAdvanceBatch()
+        }}
+      />
+    )}
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -615,8 +903,8 @@ export function EditProductsTab() {
         </div>
       )}
 
-      {/* Selection toolbar */}
-      {products.length > 0 && (
+      {/* Selection toolbar — ukryty dla Grzesieka (tylko edycja pojedyncza) */}
+      {products.length > 0 && !isGrzesiek && (
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center gap-3">
@@ -791,6 +1079,10 @@ export function EditProductsTab() {
                       product={product}
                       isSelected={selectedIds.has(product.id)}
                       onToggle={() => toggleSelection(product.id)}
+                      onDirectEdit={isGrzesiek ? async () => {
+                        await fetch('/api/product-session', { method: 'DELETE' })
+                        startBatch([product.id])
+                      } : undefined}
                     />
                   ))}
                 </tbody>
@@ -810,6 +1102,7 @@ export function EditProductsTab() {
         </>
       )}
     </div>
+    </>
   )
 }
 
@@ -861,12 +1154,13 @@ interface ProductRowProps {
   product: BLProductListItem
   isSelected: boolean
   onToggle: () => void
+  onDirectEdit?: () => void
 }
 
-const ProductRow = memo(function ProductRow({ product, isSelected, onToggle }: ProductRowProps) {
+const ProductRow = memo(function ProductRow({ product, isSelected, onToggle, onDirectEdit }: ProductRowProps) {
   return (
     <tr
-      onClick={onToggle}
+      onClick={onDirectEdit ?? onToggle}
       className={cn(
         "border-b last:border-b-0 cursor-pointer transition-colors",
         isSelected ? "bg-accent/40" : "hover:bg-muted/30"

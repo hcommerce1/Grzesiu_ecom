@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge"
 import { compileSectionsToHtml, buildInputSnapshot, classifyChangesDetailed } from "@/lib/description-utils"
 import { DEFAULT_DESCRIPTION_PROMPT, DESCRIPTION_PROMPT_STORAGE_KEY } from "@/lib/description-prompt"
 import { cn } from "@/lib/utils"
+import { DescriptionPreflightChat } from "@/components/DescriptionPreflightChat"
+import type { DescriptionStyleId } from "@/lib/description-styles"
 import type {
   ImageMeta,
   DescriptionSection,
@@ -47,6 +49,17 @@ interface Props {
   allegroParameters?: AllegroParameter[]
   /** Sheet metadata — uwagi krótkie, magazynowe, stan techniczny */
   sheetMeta?: SheetMeta
+  /** Bundle component context for description generation */
+  bundleContext?: string
+  /** Reference product description for style context */
+  referenceDescription?: string
+  /** Pełny kontekst produktu dla AI */
+  originalDescription?: string
+  price?: string
+  currency?: string
+  ean?: string
+  sku?: string
+  productUrl?: string
 }
 
 export function DescriptionGenerationStep({
@@ -70,6 +83,14 @@ export function DescriptionGenerationStep({
   onSectionTargetToggle,
   allegroParameters,
   sheetMeta,
+  bundleContext,
+  referenceDescription,
+  originalDescription,
+  price,
+  currency,
+  ean,
+  sku,
+  productUrl,
 }: Props) {
   const [generating, setGenerating] = useState(false)
   const [generatingTitle, setGeneratingTitle] = useState(false)
@@ -80,6 +101,11 @@ export function DescriptionGenerationStep({
   const [promptText, setPromptText] = useState("")
   const hasTriggered = useRef(false)
   const [paramCheckSkipped, setParamCheckSkipped] = useState(false)
+
+  // Preflight chat state
+  const [showPreflight, setShowPreflight] = useState(true)
+  const [preflightStyle, setPreflightStyle] = useState<DescriptionStyleId>('lifestyle')
+  const [preflightContext, setPreflightContext] = useState('')
 
   // Buduj string uwag z sheetMeta (uszkodzenia, stan techniczny)
   const uwagiText = (() => {
@@ -163,19 +189,16 @@ export function DescriptionGenerationStep({
     setPromptText(stored || DEFAULT_DESCRIPTION_PROMPT)
   }, [])
 
-  // Sprawdź zmiany przy wejściu na krok — auto-generuj TYLKO gdy brak opisu (pierwszy raz)
+  // Sprawdź zmiany przy wejściu na krok — pokaż preflight jeśli brak opisu
   useEffect(() => {
     if (!generatedDescription) {
-      // Brak opisu — generuj automatycznie tytuł i opis (tylko raz)
-      // Ale NIE gdy brakuje wymaganych parametrów
-      if (!hasTriggered.current && !hasRequiredParamsMissing) {
-        hasTriggered.current = true
-        generateAll()
-      }
+      // Brak opisu — pokaż preflight chat (nie auto-generuj)
+      setShowPreflight(true)
       return
     }
 
-    // Jeśli opis istnieje, sprawdź czy dane się zmieniły — pokaż banner, nie dialog
+    // Opis istnieje — ukryj preflight, sprawdź zmiany
+    setShowPreflight(false)
     const currentSnapshot = buildInputSnapshot(
       title,
       imagesMeta,
@@ -210,6 +233,9 @@ export function DescriptionGenerationStep({
             features: i.features,
           })),
           categoryPath,
+          originalDescription,
+          ean,
+          sku,
         }),
       })
       const data = await res.json()
@@ -244,10 +270,19 @@ export function DescriptionGenerationStep({
           translatedData,
           imagesMeta: activeImgs,
           filledParameters,
+          allegroParameters,
           categoryPath,
           categoryId,
           prompt: descriptionPrompt,
           uwagi: uwagiText,
+          bundleContext,
+          referenceDescription,
+          originalDescription,
+          price,
+          currency,
+          ean,
+          sku,
+          productUrl,
         }),
       })
 
@@ -276,7 +311,7 @@ export function DescriptionGenerationStep({
 
   // ─── Generuj wszystko równolegle ───
 
-  const generateAll = useCallback(async () => {
+  const generateAll = useCallback(async (style?: DescriptionStyleId, gatheredCtx?: string) => {
     // Save current version before regenerating
     if (generatedDescription) {
       pushVersion(generatedDescription, title, 'Przed regeneracją')
@@ -300,10 +335,15 @@ export function DescriptionGenerationStep({
           features: i.features,
         })),
         categoryPath,
+        originalDescription,
+        ean,
+        sku,
       }),
     }).then(r => r.json())
 
     const activeImagesMeta = imagesMeta.filter(i => !i.removed)
+    // Combine bundleContext with gatheredCtx (preflight Q&A context)
+    const combinedContext = [bundleContext, gatheredCtx].filter(Boolean).join('\n\n') || undefined
     const descPromise = fetch("/api/generate-description", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -316,6 +356,15 @@ export function DescriptionGenerationStep({
         categoryId,
         prompt: descriptionPrompt,
         uwagi: uwagiText,
+        bundleContext: combinedContext,
+        referenceDescription,
+        style,
+        originalDescription,
+        price,
+        currency,
+        ean,
+        sku,
+        productUrl,
       }),
     }).then(r => r.json())
 
@@ -488,11 +537,6 @@ export function DescriptionGenerationStep({
             className="h-7 text-xs shrink-0 gap-1"
             onClick={() => {
               setParamCheckSkipped(true)
-              // Odppal auto-generację jeśli jeszcze nie było opisu
-              if (!generatedDescription && !hasTriggered.current) {
-                hasTriggered.current = true
-                generateAll()
-              }
             }}
           >
             Pomiń
@@ -527,12 +571,39 @@ export function DescriptionGenerationStep({
             <Button
               size="sm"
               className="h-7 text-xs gap-1"
-              onClick={() => { setShowChangeBanner(false); generateAll() }}
+              onClick={() => { setShowChangeBanner(false); setShowPreflight(true) }}
             >
               <RefreshCw className="size-3" />
               Regeneruj
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* ═══ PREFLIGHT CHAT ═══ */}
+      {showPreflight && (
+        <div className="rounded-xl border border-violet-200 bg-violet-50/30 p-4">
+          <DescriptionPreflightChat
+            title={title}
+            translatedData={translatedData}
+            imagesMeta={imagesMeta}
+            filledParameters={filledParameters}
+            categoryPath={categoryPath}
+            bundleContext={bundleContext}
+            referenceDescription={referenceDescription}
+            uwagi={uwagiText}
+            originalDescription={originalDescription}
+            price={price}
+            currency={currency}
+            ean={ean}
+            sku={sku}
+            onGenerate={(style, gatheredCtx) => {
+              setPreflightStyle(style)
+              setPreflightContext(gatheredCtx)
+              setShowPreflight(false)
+              generateAll(style, gatheredCtx)
+            }}
+          />
         </div>
       )}
 
@@ -624,6 +695,50 @@ export function DescriptionGenerationStep({
           </div>
         )}
       </div>
+
+      {/* ═══ SEKCJE DO ZAZNACZENIA ═══ */}
+      {onSectionTargetToggle && previewSlot && generatedDescription && generatedDescription.sections.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2 pt-1">
+          <span className="text-xs text-muted-foreground">Zaznacz sekcję:</span>
+          {/* Title chip */}
+          {(() => {
+            const titleSection: TargetableSection = { id: 'title', label: 'Tytuł', type: 'description-section' }
+            const isActive = targetedSections?.some(s => s.id === 'title')
+            return (
+              <button
+                key="title"
+                onClick={() => onSectionTargetToggle(titleSection)}
+                className={`px-2 py-0.5 rounded-full text-xs border transition-colors ${
+                  isActive
+                    ? 'bg-primary/20 border-primary/40 text-primary font-medium'
+                    : 'bg-muted/40 border-border text-muted-foreground hover:bg-muted/70'
+                }`}
+              >
+                Tytuł {isActive && '×'}
+              </button>
+            )
+          })()}
+          {/* Section chips */}
+          {generatedDescription.sections.map(section => {
+            const targetable: TargetableSection = { id: section.id, label: section.heading || `Sekcja ${section.id}`, type: 'description-section' }
+            const isActive = targetedSections?.some(s => s.id === section.id)
+            return (
+              <button
+                key={section.id}
+                onClick={() => onSectionTargetToggle(targetable)}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-colors max-w-[200px] ${
+                  isActive
+                    ? 'bg-primary/20 border-primary/40 text-primary font-medium'
+                    : 'bg-muted/40 border-border text-muted-foreground hover:bg-muted/70'
+                }`}
+              >
+                <span className="truncate">{section.heading || `Sekcja ${section.id}`}</span>
+                {isActive && <span className="shrink-0">×</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* ═══ PODGLĄD MARKETPLACE ═══ */}
       {previewSlot}

@@ -2,10 +2,10 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Loader2, ChevronLeft, ChevronRight, Play } from "lucide-react"
+import { Loader2, Play, ChevronDown, ChevronUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { SellerScrapedListing, DiffFieldInfo, ProductSession, GeneratedDescription } from "@/lib/types"
+import { BatchItemPreviewTable } from "./BatchItemPreviewTable"
 
 interface Props {
   groupName: string
@@ -30,6 +30,7 @@ export function BatchReviewStep({
 }: Props) {
   const [batchType, setBatchType] = useState<'independent' | 'variants'>('independent')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
 
   const readyListings = listings.filter(l => l.deepScraped && !l.deepScrapeError)
   const errorListings = listings.filter(l => l.deepScrapeError)
@@ -136,6 +137,26 @@ export function BatchReviewStep({
       {titleTemplate && (
         <div className="text-sm text-muted-foreground">
           Template tytułu: <span className="font-mono text-xs">{titleTemplate}</span>
+        </div>
+      )}
+
+      {/* Per-item preview toggle */}
+      {readyListings.length > 0 && (titleTemplate || selectedDiffFields.some(f => f.startsWith('attr:'))) && (
+        <div>
+          <button
+            onClick={() => setShowPreview(v => !v)}
+            className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
+          >
+            {showPreview ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            Podgląd per produkt
+          </button>
+          {showPreview && (
+            <BatchItemPreviewTable
+              listings={readyListings}
+              titleTemplate={titleTemplate}
+              diffFields={selectedDiffFields}
+            />
+          )}
         </div>
       )}
 
