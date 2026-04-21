@@ -29,8 +29,6 @@ export interface ScrapeError {
 
 export type ScrapeResponse = ScrapeResult | ScrapeError;
 
-export type SiteExtractor = (page: import('playwright').Page, url: string) => Promise<ProductData>;
-
 // ─── Allegro Types ───
 export interface AllegroCategory {
   id: string;

@@ -1,4 +1,5 @@
-import type { ProductData, SiteExtractor } from '../types';
+import type { ProductData } from '../types';
+import type { SiteExtractor } from '../scraper-types';
 import { formatDescriptionHtml, isValidImageUrl } from './utils';
 import { isIconOrLogo } from '../scraper';
 

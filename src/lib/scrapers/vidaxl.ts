@@ -1,4 +1,4 @@
-import type { SiteExtractor } from '../types';
+import type { SiteExtractor } from '../scraper-types';
 import { formatDescriptionHtml } from './utils';
 
 export const extractVidaXL: SiteExtractor = async (page, url) => {

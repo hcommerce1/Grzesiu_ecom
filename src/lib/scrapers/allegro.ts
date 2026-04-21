@@ -1,4 +1,4 @@
-import type { SiteExtractor } from '../types';
+import type { SiteExtractor } from '../scraper-types';
 
 export const extractAllegro: SiteExtractor = async (page, url) => {
     // Wait for page hydration

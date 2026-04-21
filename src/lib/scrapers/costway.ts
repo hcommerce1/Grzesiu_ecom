@@ -1,4 +1,4 @@
-import type { SiteExtractor } from '../types';
+import type { SiteExtractor } from '../scraper-types';
 import { formatDescriptionHtml } from './utils';
 import { extractGeneric } from './generic';
 

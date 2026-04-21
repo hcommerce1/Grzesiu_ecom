@@ -1,4 +1,4 @@
-import type { SiteExtractor } from '../types';
+import type { SiteExtractor } from '../scraper-types';
 import { extractAmazon } from './amazon';
 import { extractDWD } from './dwd';
 import { extractAosom } from './aosom';
