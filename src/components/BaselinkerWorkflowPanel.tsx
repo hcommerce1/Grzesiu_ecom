@@ -9,6 +9,7 @@ import { PreviewContainer } from "./previews/PreviewContainer"
 import { ImageManagementStep } from "./ImageManagementStep"
 import { DescriptionGenerationStep } from "./DescriptionGenerationStep"
 import { ClaudeChat } from "./ClaudeChat"
+import { AgentPanel } from "./AgentPanel"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
@@ -25,10 +26,12 @@ import type {
   ParameterMatchResult,
   ImageMeta,
   GeneratedDescription,
+  DescriptionSection,
   DescriptionInputSnapshot,
   AutoFillEntry,
   BLProductType,
   TargetableSection,
+  ChatAction,
 } from "@/lib/types"
 
 interface Props {
@@ -402,6 +405,10 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       }
       if (!selectedWarehouse && data.cache.warehouses?.length > 0) {
         setSelectedWarehouse(data.cache.warehouses[0].warehouse_id)
+      }
+      // Set default price group for agent (Bug 1 fix)
+      if (data.cache.priceGroups?.length > 0) {
+        updateSession({ defaultPriceGroup: String(data.cache.priceGroups[0].price_group_id) }).catch(() => {/* non-fatal */})
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Błąd bootstrap BaseLinker")
@@ -1088,9 +1095,54 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }
 
+  // Agent action handler — maps agent SSE actions to BaselinkerWorkflowPanel state
+  function handleAgentAction(action: ChatAction) {
+    switch (action.type) {
+      case 'update_parameter':
+        if (action.parameterId && action.parameterValue !== undefined) {
+          handleParameterChangeFromChat(action.parameterId, action.parameterValue)
+        }
+        break
+      case 'update_title':
+        if (action.title) {
+          setLocalTitle(action.title)
+          setIsTitleGenerated(true)
+          updateSession({ generatedTitle: action.title }).catch(() => {/* non-fatal */})
+        }
+        break
+      case 'update_section':
+        handleChatSectionUpdate(action.sectionId!, action.heading, action.bodyHtml)
+        break
+      case 'add_section':
+        handleChatSectionAdd(
+          { id: action.sectionId ?? `section-${Math.random().toString(36).slice(2, 10)}`, heading: action.heading ?? '', bodyHtml: action.bodyHtml ?? '', layout: action.layout ?? 'text-only', imageUrls: [] },
+          action.afterSectionId
+        )
+        break
+      case 'remove_section':
+        if (action.sectionId) handleChatSectionRemove(action.sectionId)
+        break
+      case 'change_section_layout':
+        if (action.sectionId && action.layout) handleChatSectionLayoutChange(action.sectionId, action.layout)
+        break
+    }
+  }
+
+  // Agent: description generated callback
+  function handleAgentDescriptionGenerated(sections: DescriptionSection[], fullHtml: string) {
+    const desc: GeneratedDescription = {
+      sections,
+      fullHtml,
+      generatedAt: new Date().toISOString(),
+      inputHash: '',
+    }
+    setGeneratedDescription(desc)
+    updateSession({ generatedDescription: desc }).catch(() => {/* non-fatal */})
+  }
+
   return (
     <>
-      <div className={`grid ${currentStep === 'preview' ? 'grid-cols-[1fr_420px]' : 'grid-cols-1'} gap-5`}>
+      <div className={`grid ${currentStep === 'preview' ? 'grid-cols-[1fr_420px_360px]' : 'grid-cols-[1fr_360px]'} gap-5`}>
         {/* Lewa kolumna: workflow */}
         <div className="rounded-xl ring-1 ring-foreground/10 bg-card overflow-hidden">
           {/* Header */}
@@ -1210,6 +1262,31 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             />
           </div>
         )}
+
+        {/* Agent panel — persistent right sidebar across all steps */}
+        <div className="sticky top-[4.5rem] self-start" style={{ height: 'calc(100vh - 5rem)' }}>
+          <AgentPanel
+            session={session}
+            imagesMeta={imagesMeta}
+            productId={sheetProductId ?? editProductId ?? 'local'}
+            onSessionPatch={(patch) => {
+              updateSession(patch).catch(() => {/* non-fatal */})
+            }}
+            onImagesAnalyzed={(meta) => {
+              setImagesMeta(meta)
+              updateSession({ imagesMeta: meta }).catch(() => {/* non-fatal */})
+            }}
+            onTitleGenerated={(title, candidates) => {
+              setLocalTitle(title)
+              setIsTitleGenerated(true)
+              setTitleCandidates(candidates)
+              updateSession({ generatedTitle: title, titleCandidates: candidates }).catch(() => {/* non-fatal */})
+            }}
+            onDescriptionGenerated={handleAgentDescriptionGenerated}
+            onAction={handleAgentAction}
+            className="h-full rounded-xl ring-1 ring-foreground/10 overflow-hidden"
+          />
+        </div>
       </div>
 
       {showApproval && session && (

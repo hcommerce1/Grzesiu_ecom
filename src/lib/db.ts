@@ -8,7 +8,7 @@ const PRODUCT_LIST_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 
 let _db: Database.Database | null = null;
 
-function getDb(): Database.Database {
+export function getDb(): Database.Database {
   if (_db) return _db;
 
   const dir = path.dirname(DB_PATH);
@@ -168,6 +168,25 @@ function getDb(): Database.Database {
       created_at        TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_seller_listings_session ON seller_scraped_listings(session_id);
+  `);
+
+  // ─── Token usage tracking ───
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS product_token_usage (
+      id                  TEXT PRIMARY KEY,
+      product_id          TEXT NOT NULL,
+      session_key         TEXT,
+      tool_name           TEXT NOT NULL,
+      model               TEXT NOT NULL,
+      input_tokens        INTEGER DEFAULT 0,
+      output_tokens       INTEGER DEFAULT 0,
+      cache_write_tokens  INTEGER DEFAULT 0,
+      cache_read_tokens   INTEGER DEFAULT 0,
+      cost_usd            REAL DEFAULT 0,
+      cost_pln            REAL DEFAULT 0,
+      created_at          TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_usage_product ON product_token_usage(product_id);
   `);
 
   return _db;

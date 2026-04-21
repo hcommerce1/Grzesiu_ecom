@@ -38,7 +38,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ job
 
       // Determine mode
       let mode: 'new' | 'edit' | 'variant' = 'new';
-      if (job.batchType === 'variants' && item.orderIndex > 0 && job.parentProductId) {
+      if (job.batchType === 'variants' && item.orderIndex > 0) {
+        if (!job.parentProductId) {
+          updateBatchJobItem(item.id, { status: 'error', errorMessage: 'parentProductId nie ustawiony po item 0 — nie można tworzyć wariantu' });
+          updateBatchJob(jobId, { failedItems: job.failedItems + 1, lastActivity: new Date().toISOString() });
+          return NextResponse.json({ done: false, item: { id: item.id, error: 'parentProductId missing' }, progress: getBatchJobProgress(jobId) });
+        }
         mode = 'variant';
       } else if (templateSession.mode === 'edit') {
         mode = 'edit';
@@ -83,9 +88,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ job
       const result = await addInventoryProduct(payload);
       const blProductId = String(result.product_id);
 
-      // If variants and this is the first item, save parent product ID
+      // If variants and this is the first item, persist parent product ID immediately
       if (job.batchType === 'variants' && item.orderIndex === 0) {
-        updateBatchJob(jobId, { parentProductId: blProductId });
+        updateBatchJob(jobId, { parentProductId: blProductId, lastActivity: new Date().toISOString() });
       }
 
       // Success

@@ -302,7 +302,22 @@ export async function POST(req: Request) {
       }
     }
 
-    const actions: ChatAction[] = Array.isArray(parsed.actions) ? parsed.actions : [];
+    const rawActions: ChatAction[] = Array.isArray(parsed.actions) ? parsed.actions : [];
+
+    // Validate action IDs against provided context to prevent hallucinated IDs
+    const sectionIds = new Set((body.sections ?? []).map((s: DescriptionSection) => s.id));
+    const paramIds = new Set((body.allegroParameters ?? []).map((p: AllegroParameter) => p.id));
+    const actions = rawActions.filter(a => {
+      if ('sectionId' in a && a.sectionId && !sectionIds.has(a.sectionId)) {
+        console.warn('[description-chat] Dropping action with unknown sectionId:', a.sectionId);
+        return false;
+      }
+      if ('parameterId' in a && a.parameterId && !paramIds.has(a.parameterId)) {
+        console.warn('[description-chat] Dropping action with unknown parameterId:', a.parameterId);
+        return false;
+      }
+      return true;
+    });
 
     return NextResponse.json({
       message: parsed.message || 'Wykonano.',

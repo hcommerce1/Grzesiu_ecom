@@ -78,7 +78,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
       const dict = paramDicts[paramId];
       if (Array.isArray(value)) {
         const resolved = value.map(v => (dict ? (dict[v] ?? v) : v)).filter(Boolean);
-        if (resolved.length > 0) filled[paramId] = resolved;
+        if (resolved.length > 0) filled[paramId] = resolved.join(', ');
       } else if (value !== '' && value != null) {
         filled[paramId] = dict ? (dict[value] ?? value) : value;
       }
@@ -155,11 +155,12 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     payload['stock'] = { [warehouseKey]: isNaN(stockVal) ? 0 : stockVal };
   }
 
-  // Prices — user override
-  if (fieldSelection?.prices && warehouseKey) {
+  // Prices — user override (keyed by price group ID, NOT warehouse)
+  const priceGroupKey = session.defaultPriceGroup;
+  if (fieldSelection?.prices && priceGroupKey) {
     const priceVal = efv['prices'] ? parseFloat(efv['prices'].replace(',', '.')) : null;
     if (priceVal && !isNaN(priceVal)) {
-      payload['prices'] = { [warehouseKey]: priceVal };
+      payload['prices'] = { [priceGroupKey]: priceVal };
     }
   }
 

@@ -189,6 +189,8 @@ export interface ProductSession {
   sheetMeta?: SheetMeta;
   // Workflow step persistence (for resume)
   currentStep?: string;
+  // Price group ID for BaseLinker (keyed prices payload)
+  defaultPriceGroup?: string;
 }
 
 // ─── Google Sheets Types ───
