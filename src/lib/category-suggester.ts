@@ -14,6 +14,7 @@ export async function suggestCategory(
   productTitle: string,
   attributes: Record<string, string>,
   apiKey: string,
+  onProgress?: (message: string) => void,
 ): Promise<{ suggestions: CategorySuggestion[]; usage: AnthropicUsage }> {
   const anthropic = new Anthropic({ apiKey });
 
@@ -32,6 +33,8 @@ Każde wyszukiwanie to 1-3 słowa kluczowe po polsku, które mogą być nazwą k
 
 Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 {"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}`;
+
+  onProgress?.('Generuję zapytania wyszukiwania...');
 
   const llmRes = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -55,10 +58,13 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
     searches = [productTitle.split(' ').slice(0, 3).join(' ')];
   }
 
+  const terms = searches.slice(0, 8);
+  onProgress?.(`Przeszukuję ${terms.length} kategorii Allegro...`);
+
   const seenIds = new Set<string>();
   const allResults: Array<{ id: string; name: string; fullPath: string; leaf: boolean }> = [];
 
-  for (const term of searches.slice(0, 8)) {
+  for (const term of terms) {
     try {
       const results = await searchCategories(term, 10);
       for (const cat of results) {
@@ -74,6 +80,9 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 
   const topResults = allResults.slice(0, 10);
   const COMMISSION_BATCH = 5;
+
+  onProgress?.(`Pobieram prowizje dla top ${Math.min(COMMISSION_BATCH, topResults.length)}...`);
+
   const commissionsRaw = await Promise.allSettled(
     topResults.slice(0, COMMISSION_BATCH).map(cat => getCommissionInfo(cat.id))
   );

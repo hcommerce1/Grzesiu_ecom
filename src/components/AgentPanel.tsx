@@ -17,6 +17,13 @@ interface Message {
   content: string
 }
 
+interface CategorySuggestion {
+  id: string
+  name: string
+  path: string
+  commission: string | null
+}
+
 interface AgentPanelProps {
   session: ProductSession | null
   imagesMeta: ImageMeta[]
@@ -46,6 +53,7 @@ export function AgentPanel({
   const [isStreaming, setIsStreaming] = useState(false)
   const [started, setStarted] = useState(false)
   const [totalCost, setTotalCost] = useState<{ pln: number; tokens: number } | null>(null)
+  const [categorySuggestions, setCategorySuggestions] = useState<CategorySuggestion[] | null>(null)
   const [sessionKey] = useState(() => crypto.randomUUID())
 
   const conversationHistory = useRef<Message[]>([])
@@ -69,9 +77,10 @@ export function AgentPanel({
   }, [session?.data?.title])
 
   const sendMessage = useCallback(
-    async (text: string, mode: "start" | "chat" = "chat") => {
+    async (text: string, mode: "start" | "chat" = "chat", sessionOverride?: ProductSession) => {
       if (isStreaming) return
-      if (!session) return
+      const activeSession = sessionOverride ?? session
+      if (!activeSession) return
 
       if (text.trim()) {
         const userMsg: Message = { role: "user", content: text.trim() }
@@ -81,6 +90,7 @@ export function AgentPanel({
 
       if (mode === "start") {
         setSteps([])
+        setCategorySuggestions(null)
       }
 
       setIsStreaming(true)
@@ -98,7 +108,7 @@ export function AgentPanel({
             message: text.trim(),
             mode,
             conversationHistory: conversationHistory.current.slice(-20),
-            session,
+            session: activeSession,
             imagesMeta,
             productId,
             sessionKey,
@@ -147,6 +157,20 @@ export function AgentPanel({
                       : s
                   )
                 )
+                break
+
+              case "tool_progress":
+                setSteps(prev =>
+                  prev.map(s =>
+                    s.name === event.name && s.status === "running"
+                      ? { ...s, summary: event.message as string }
+                      : s
+                  )
+                )
+                break
+
+              case "category_suggestions_ready":
+                setCategorySuggestions(event.suggestions as CategorySuggestion[])
                 break
 
               case "message_delta": {
@@ -237,6 +261,17 @@ export function AgentPanel({
     abortRef.current?.abort()
   }
 
+  function handlePickCategory(c: CategorySuggestion) {
+    if (!session) return
+    const patched: ProductSession = {
+      ...session,
+      allegroCategory: { id: c.id, name: c.name, path: c.path, leaf: true },
+    }
+    onSessionPatch({ allegroCategory: patched.allegroCategory })
+    setCategorySuggestions(null)
+    sendMessage(`Kategoria potwierdzona: ${c.name} (${c.id}). Kontynuuj workflow.`, "chat", patched)
+  }
+
   const hasData = !!session?.data?.title
 
   return (
@@ -279,6 +314,36 @@ export function AgentPanel({
             </div>
           ))}
           <div ref={stepsEndRef} />
+        </div>
+      )}
+
+      {/* Category picker */}
+      {categorySuggestions && categorySuggestions.length > 0 && (
+        <div className="px-3 py-3 border-b bg-amber-50 shrink-0">
+          <p className="text-xs font-semibold text-amber-900 mb-2">
+            Wybierz kategorię Allegro (top {categorySuggestions.length}):
+          </p>
+          <div className="space-y-1.5">
+            {categorySuggestions.map(c => (
+              <button
+                key={c.id}
+                onClick={() => handlePickCategory(c)}
+                className="w-full text-left bg-white border border-amber-200 hover:border-amber-400 hover:bg-amber-50 rounded-md px-2.5 py-1.5 transition-colors"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-slate-800 truncate">{c.name}</p>
+                    <p className="text-[10px] text-slate-500 truncate">{c.path}</p>
+                  </div>
+                  {c.commission && (
+                    <span className="text-[10px] text-amber-700 font-semibold shrink-0 whitespace-nowrap">
+                      {c.commission}
+                    </span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

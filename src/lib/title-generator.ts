@@ -2,7 +2,7 @@ import { filterAttributesForAI } from './ai-field-filter';
 import type { ProductSession, ImageMeta } from './types';
 import type { AnthropicUsage } from './image-analyzer';
 
-const TITLE_MODEL = process.env.TITLE_MODEL || 'claude-opus-4-6';
+const TITLE_MODEL = process.env.TITLE_MODEL || 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `Jesteś ekspertem od tworzenia tytułów aukcji na Allegro.
 

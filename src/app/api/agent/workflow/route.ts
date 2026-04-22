@@ -12,8 +12,12 @@ import { calcCost, sumUsage } from '@/lib/token-cost';
 import type { AnthropicUsage } from '@/lib/token-cost';
 import { randomUUID } from 'crypto';
 
-const AGENT_MODEL = 'claude-opus-4-6';
-const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-opus-4-6';
+const AGENT_MODEL = process.env.AGENT_MODEL || 'claude-haiku-4-5-20251001';
+const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-haiku-4-5-20251001';
+const DESCRIPTION_MODEL = process.env.DESCRIPTION_MODEL || 'claude-opus-4-6';
+const TITLE_MODEL = process.env.TITLE_MODEL || 'claude-haiku-4-5-20251001';
+const VISION_MODEL = process.env.AGENT_VISION_MODEL || 'claude-opus-4-6';
+const CATEGORY_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_ITERATIONS = 20;
 
 interface AgentRequest {
@@ -33,7 +37,17 @@ interface AgentState {
   filledParameters: Record<string, string | string[]>;
   generatedSections: DescriptionSection[];
   generatedTitle: string;
-  totalUsage: AnthropicUsage;
+  usageByModel: Record<string, AnthropicUsage>;
+}
+
+function addUsage(state: AgentState, model: string, usage: AnthropicUsage): void {
+  const existing = state.usageByModel[model] ?? {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  };
+  state.usageByModel[model] = sumUsage([existing, usage]);
 }
 
 // ─── Tool definitions ───
@@ -41,7 +55,7 @@ interface AgentState {
 const TOOLS: Anthropic.Tool[] = [
   {
     name: 'analyze_images',
-    description: 'Analizuje zdjęcia produktu: tekst z etykiet, wymiary, kolor, model, typ zdjęcia. ZAWSZE wywołaj jako pierwszy krok.',
+    description: 'Analizuje zdjęcia produktu: tekst z etykiet, wymiary, kolor, model, typ zdjęcia. Wywołaj PO potwierdzeniu kategorii przez użytkownika.',
     input_schema: {
       type: 'object',
       properties: {
@@ -218,23 +232,42 @@ function buildSystemPrompt(state: AgentState): string {
 
   return `Jesteś Asystentem Wystawiania na Allegro. Pomagasz Grzesiowi wystawić produkt krok po kroku, od zescrapowanych danych do gotowej oferty.
 
-## TWÓJ WORKFLOW (przy mode=start, wykonaj w tej kolejności):
-1. analyze_images — ZAWSZE pierwszy krok, nawet jeśli zdjęcia były już analizowane
-2. suggest_category — jeśli kategoria nie ustawiona w sesji
-3. fetch_category_parameters — po wyborze/sugestii kategorii
-4. fill_parameters — auto-uzupełnij parametry AI-em
-5. validate_parameters — sprawdź co brakuje
-6. [jeśli brakuje wymaganych] — zapytaj użytkownika, max 3 pytania naraz, bullet lista
-7. generate_title — po uzupełnieniu parametrów
-8. generate_description — po tytule
-9. Podsumuj i czekaj na korekty
+## TWÓJ WORKFLOW (przy mode=start, wykonaj ŚCIŚLE w tej kolejności):
 
-## ZASADY KOMUNIKACJI:
-- Pisz PO POLSKU, zwięźle i konkretnie
-- Przed każdym narzędziem: 1 zdanie co robisz
-- Po każdym narzędziu: konkretny wynik (liczby, dane, co znalazłeś)
-- Przy pytaniach do użytkownika: bullet lista, TYLKO wymagane parametry, konkretne pytania
-- Nie pytaj o rzeczy które możesz wywnioskować ze zdjęć lub atrybutów produktu
+Dane produktu są już zescrapowane i przetłumaczone zanim do Ciebie trafią — nie tykaj tego.
+
+1. KATEGORIA — suggest_category (jeśli session.allegroCategory.id pusty).
+   GATE: po suggest_category NIE WOLNO wywołać żadnego innego toola, dopóki user nie potwierdzi
+   kategorii w UI. Zakończ turę, nic nie pisz, czekaj na wiadomość usera.
+
+2. OPIS ZDJĘĆ — analyze_images (dopiero gdy session.allegroCategory.id jest ustawione;
+   znajomość kategorii poprawia trafność analizy wizji).
+
+3. PARAMETRY — w jednej fazie:
+   a) fetch_category_parameters — pobierz schema parametrów kategorii
+   b) fill_parameters — auto-uzupełnij AI-em
+   c) validate_parameters
+   d) jeśli brakuje wymaganych → zadaj max 3 konkretne pytania userowi bulletami, czekaj na odpowiedź
+
+4. OPIS — generate_description (JEDYNE miejsce, gdzie wolno użyć mocniejszego modelu).
+
+5. Zakończ jednym zdaniem podsumowania. Czekaj na korekty usera.
+
+## ZASADA GATE (kategoria):
+- Po wywołaniu suggest_category NIE wolno wywołać ŻADNEGO innego toola, dopóki session.allegroCategory.id nie zostanie potwierdzone przez usera.
+- Jeśli suggest_category zwróciło sugestie z flagą awaiting_user_selection: true → zakończ turę, nic nie pisz, poczekaj na wiadomość usera.
+
+## generate_title jest POMINIĘTY w głównym flow.
+Tytuł przychodzi już z scrapera + tłumacza. Wywołaj generate_title TYLKO gdy user wprost o to poprosi w chacie.
+
+## STYL WYPOWIEDZI (BARDZO WAŻNE):
+- DOMYŚLNIE nie piszesz tekstu. Narzędzia wykonują pracę. User widzi progress w UI.
+- Piszesz JEDYNIE gdy:
+  (a) coś poszło nie tak — konkretny błąd + co zrobisz dalej,
+  (b) musisz zapytać użytkownika (bullet lista, wymagane parametry),
+  (c) skończyłeś całą sekwencję — 1 zdanie podsumowania.
+- Bez "świetnie!", "teraz zrobię...", "mam to!", "oto co widzę". Bez monologów krok-po-kroku.
+- Pisz PO POLSKU, z poprawnymi znakami diakrytycznymi (ą, ć, ę, ł, ń, ó, ś, ź, ż).
 
 ## TRYB EDYCJI (mode=chat po wygenerowaniu opisu):
 - "zmień X" → update_parameter, a jeśli X wpływa na opis → też update_section
@@ -303,10 +336,10 @@ async function executeTool(
         uploadedVia: undefined,
       }));
 
-      logTokenUsage({ productId, sessionKey, toolName, model: AGENT_MODEL, usage });
-      state.totalUsage = sumUsage([state.totalUsage, usage]);
+      logTokenUsage({ productId, sessionKey, toolName, model: VISION_MODEL, usage });
+      addUsage(state, VISION_MODEL, usage);
       sseWrite({ type: 'images_analyzed', imagesMeta: state.imagesMeta });
-      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, AGENT_MODEL) });
+      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, VISION_MODEL) });
 
       const labelTexts = results.filter(r => r.labelText).map(r => r.labelText).slice(0, 3);
       return JSON.stringify({
@@ -318,21 +351,37 @@ async function executeTool(
     }
 
     case 'suggest_category': {
-      const title = (input.title as string) || state.session.data?.title || '';
-      const attributes = (input.attributes as Record<string, string>) || state.session.data?.attributes || {};
-      const { suggestions, usage } = await suggestCategory(title, attributes, apiKey);
-
-      logTokenUsage({ productId, sessionKey, toolName, model: 'claude-haiku-4-5-20251001', usage });
-      state.totalUsage = sumUsage([state.totalUsage, usage]);
-      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, 'claude-haiku-4-5-20251001') });
-
-      if (suggestions.length > 0) {
-        const top = suggestions[0];
-        state.session = { ...state.session, allegroCategory: { id: top.id, name: top.name, path: top.path, leaf: true } };
-        sseWrite({ type: 'session_patch', patch: { allegroCategory: state.session.allegroCategory } });
+      if (state.session.allegroCategory?.id) {
+        const existing = state.session.allegroCategory;
+        return JSON.stringify({
+          already_selected: { id: existing.id, name: existing.name, path: existing.path },
+        });
       }
 
-      return JSON.stringify({ suggestions: suggestions.slice(0, 5).map(s => ({ id: s.id, name: s.name, path: s.path })) });
+      const title = (input.title as string) || state.session.data?.title || '';
+      const attributes = (input.attributes as Record<string, string>) || state.session.data?.attributes || {};
+      const { suggestions, usage } = await suggestCategory(title, attributes, apiKey, (msg) => {
+        sseWrite({ type: 'tool_progress', name: 'suggest_category', message: msg });
+      });
+
+      logTokenUsage({ productId, sessionKey, toolName, model: CATEGORY_MODEL, usage });
+      addUsage(state, CATEGORY_MODEL, usage);
+      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, CATEGORY_MODEL) });
+
+      const top5 = suggestions.slice(0, 5).map(s => ({
+        id: s.id,
+        name: s.name,
+        path: s.path,
+        commission: s.commission,
+      }));
+
+      sseWrite({ type: 'category_suggestions_ready', suggestions: top5 });
+
+      return JSON.stringify({
+        suggestions: top5,
+        awaiting_user_selection: true,
+        instruction: 'STOP. Wait for user to pick category via UI. Do NOT call any other tool until session.allegroCategory.id is set.',
+      });
     }
 
     case 'fetch_category_parameters': {
@@ -386,7 +435,7 @@ async function executeTool(
       const data = await response.json();
       const usage: AnthropicUsage = data.usage ?? {};
       logTokenUsage({ productId, sessionKey, toolName, model: AUTOFILL_MODEL, usage });
-      state.totalUsage = sumUsage([state.totalUsage, usage]);
+      addUsage(state, AUTOFILL_MODEL, usage);
       sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, AUTOFILL_MODEL) });
 
       const rawText = data.content?.[0]?.text || '{}';
@@ -437,13 +486,13 @@ async function executeTool(
         input.additionalContext as string | undefined,
         apiKey,
       );
-      logTokenUsage({ productId, sessionKey, toolName, model: AGENT_MODEL, usage });
-      state.totalUsage = sumUsage([state.totalUsage, usage]);
+      logTokenUsage({ productId, sessionKey, toolName, model: TITLE_MODEL, usage });
+      addUsage(state, TITLE_MODEL, usage);
       state.generatedTitle = title;
       state.session = { ...state.session, generatedTitle: title, titleCandidates: candidates };
       sseWrite({ type: 'title_generated', title, candidates });
       sseWrite({ type: 'session_patch', patch: { generatedTitle: title, titleCandidates: candidates } });
-      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, AGENT_MODEL) });
+      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, TITLE_MODEL) });
       return JSON.stringify({ title, candidates, length: title.length });
     }
 
@@ -464,11 +513,11 @@ async function executeTool(
         additionalContext: input.additionalContext as string | undefined,
       }, apiKey);
 
-      logTokenUsage({ productId, sessionKey, toolName, model: AGENT_MODEL, usage });
-      state.totalUsage = sumUsage([state.totalUsage, usage]);
+      logTokenUsage({ productId, sessionKey, toolName, model: DESCRIPTION_MODEL, usage });
+      addUsage(state, DESCRIPTION_MODEL, usage);
       state.generatedSections = sections;
       sseWrite({ type: 'description_generated', sections, fullHtml, inputHash });
-      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, AGENT_MODEL) });
+      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, DESCRIPTION_MODEL) });
       return JSON.stringify({ sections: sections.length, inputHash });
     }
 
@@ -525,7 +574,7 @@ export async function POST(req: NextRequest) {
           filledParameters: session.filledParameters ?? {},
           generatedSections: [],
           generatedTitle: session.generatedTitle ?? '',
-          totalUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+          usageByModel: {},
         };
 
         // Build initial messages
@@ -572,7 +621,7 @@ export async function POST(req: NextRequest) {
             cache_creation_input_tokens: (finalMsg.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens,
             cache_read_input_tokens: (finalMsg.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens,
           };
-          state.totalUsage = sumUsage([state.totalUsage, iterUsage]);
+          addUsage(state, AGENT_MODEL, iterUsage);
 
           if (finalMsg.stop_reason === 'end_turn') {
             break;
@@ -627,14 +676,24 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Send final cost summary
-        const totalCost = calcCost(state.totalUsage, AGENT_MODEL);
+        // Send final cost summary — cost per model, then summed
+        const totalCost = Object.entries(state.usageByModel).reduce(
+          (acc, [model, usage]) => {
+            const c = calcCost(usage, model);
+            return { usd: acc.usd + c.usd, pln: acc.pln + c.pln };
+          },
+          { usd: 0, pln: 0 },
+        );
+        const totalUsage = sumUsage(Object.values(state.usageByModel));
         sseWrite({
           type: 'total_cost',
-          input_tokens: state.totalUsage.input_tokens,
-          output_tokens: state.totalUsage.output_tokens,
+          input_tokens: totalUsage.input_tokens,
+          output_tokens: totalUsage.output_tokens,
           usd: totalCost.usd,
           pln: totalCost.pln,
+          byModel: Object.fromEntries(
+            Object.entries(state.usageByModel).map(([m, u]) => [m, { ...u, ...calcCost(u, m) }]),
+          ),
         });
         sseWrite({ type: 'done' });
 
