@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { SellerScrapeSession, SellerScrapedListing, DiffFieldInfo, ProductSession, AIChatMessage } from '@/lib/types';
+import type { SellerScrapeSession, SellerScrapedListing, DiffFieldInfo, ProductSession } from '@/lib/types';
 
 export type SellerScraperStep =
   | 'input'
@@ -23,7 +23,6 @@ interface SellerScraperStore {
   diffFields: DiffFieldInfo[];
   selectedDiffFields: string[];
   templateSession: ProductSession | null;
-  chatMessages: AIChatMessage[];
   currentPage: number;
   totalPages: number;
   /** URL of a reference product for description context */
@@ -49,7 +48,6 @@ interface SellerScraperStore {
   setSelectedDiffFields: (fields: string[]) => void;
   toggleDiffField: (field: string) => void;
   setTemplateSession: (session: ProductSession) => void;
-  addChatMessage: (msg: AIChatMessage) => void;
   setCurrentPage: (page: number) => void;
   setTotalPages: (pages: number) => void;
   reset: () => void;
@@ -65,7 +63,6 @@ const initialState = {
   diffFields: [],
   selectedDiffFields: [],
   templateSession: null,
-  chatMessages: [],
   currentPage: 1,
   totalPages: 0,
   referenceProductUrl: '',
@@ -74,7 +71,7 @@ const initialState = {
 
 export const useSellerScraperStore = create<SellerScraperStore>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       ...initialState,
 
       setStep: (step) => set({ step }),
@@ -149,10 +146,6 @@ export const useSellerScraperStore = create<SellerScraperStore>()(
 
       setTemplateSession: (session) => set({ templateSession: session }),
 
-      addChatMessage: (msg) => set(state => ({
-        chatMessages: [...state.chatMessages, msg],
-      })),
-
       setCurrentPage: (page) => set({ currentPage: page }),
 
       setTotalPages: (pages) => set({ totalPages: pages }),
@@ -171,7 +164,6 @@ export const useSellerScraperStore = create<SellerScraperStore>()(
         diffFields: state.diffFields,
         selectedDiffFields: state.selectedDiffFields,
         templateSession: state.templateSession,
-        chatMessages: state.chatMessages,
         currentPage: state.currentPage,
         totalPages: state.totalPages,
       }),

@@ -19,7 +19,7 @@ const PRICING: Record<string, { input: number; output: number; cacheWrite: numbe
 const USD_TO_PLN = 4.0;
 
 export function calcCost(usage: AnthropicUsage, model: string): TokenCost {
-  const p = PRICING[model] ?? PRICING['claude-opus-4-6'];
+  const p = PRICING[model] ?? PRICING['claude-sonnet-4-6'];
   const usd =
     usage.input_tokens * p.input +
     usage.output_tokens * p.output +

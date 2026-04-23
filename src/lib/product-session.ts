@@ -63,9 +63,11 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
   }
 
   if (fieldSelection?.features && session.filledParameters) {
-    // Buduj mapę: paramId -> { optionId -> polskiTekst }
+    // Buduj mapę: paramId -> { optionId -> polskiTekst } oraz paramId -> nazwa
     const paramDicts: Record<string, Record<string, string>> = {};
+    const paramNames: Record<string, string> = {};
     for (const param of session.allegroParameters ?? []) {
+      paramNames[param.id] = param.name;
       if (param.dictionary && param.dictionary.length > 0) {
         paramDicts[param.id] = Object.fromEntries(
           param.dictionary.map(opt => [opt.id, opt.value])
@@ -76,11 +78,12 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     const filled: Record<string, string | string[]> = {};
     for (const [paramId, value] of Object.entries(session.filledParameters)) {
       const dict = paramDicts[paramId];
+      const key = paramNames[paramId] ?? paramId;
       if (Array.isArray(value)) {
         const resolved = value.map(v => (dict ? (dict[v] ?? v) : v)).filter(Boolean);
-        if (resolved.length > 0) filled[paramId] = resolved.join(', ');
+        if (resolved.length > 0) filled[key] = resolved.join(', ');
       } else if (value !== '' && value != null) {
-        filled[paramId] = dict ? (dict[value] ?? value) : value;
+        filled[key] = dict ? (dict[value] ?? value) : value;
       }
     }
 

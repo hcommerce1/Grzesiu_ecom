@@ -14,9 +14,9 @@ import { randomUUID } from 'crypto';
 
 const AGENT_MODEL = process.env.AGENT_MODEL || 'claude-haiku-4-5-20251001';
 const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-haiku-4-5-20251001';
-const DESCRIPTION_MODEL = process.env.DESCRIPTION_MODEL || 'claude-opus-4-6';
+const DESCRIPTION_MODEL = process.env.DESCRIPTION_MODEL || 'claude-sonnet-4-6';
 const TITLE_MODEL = process.env.TITLE_MODEL || 'claude-haiku-4-5-20251001';
-const VISION_MODEL = process.env.AGENT_VISION_MODEL || 'claude-opus-4-6';
+const VISION_MODEL = process.env.AGENT_VISION_MODEL || 'claude-sonnet-4-6';
 const CATEGORY_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_ITERATIONS = 20;
 
@@ -190,6 +190,220 @@ const TOOLS: Anthropic.Tool[] = [
       required: ['sectionId'],
     },
   },
+  // ─── Section edition extensions ───
+  {
+    name: 'expand_section',
+    description: 'Rozszerza / dopisuje do istniejącej sekcji (bez nadpisywania). Użyj gdy user prosi "rozbuduj", "dodaj informację do sekcji".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sectionId: { type: 'string' },
+        bodyHtml: { type: 'string', description: 'Nowa treść HTML zastępująca starą (rozbudowana o dodatkowe info)' },
+        heading: { type: 'string' },
+      },
+      required: ['sectionId', 'bodyHtml'],
+    },
+  },
+  {
+    name: 'reorder_sections',
+    description: 'Zmienia kolejność sekcji opisu. Przekaż pełną listę sectionIds w nowej kolejności.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sectionIds: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['sectionIds'],
+    },
+  },
+  {
+    name: 'change_section_layout',
+    description: 'Zmienia tylko layout sekcji (image-text / text-only / images-only) — bez ruszania treści.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sectionId: { type: 'string' },
+        layout: { type: 'string', enum: ['image-text', 'text-only', 'images-only'] },
+      },
+      required: ['sectionId', 'layout'],
+    },
+  },
+  {
+    name: 'reorder_section_images',
+    description: 'Zmienia kolejność zdjęć wewnątrz konkretnej sekcji opisu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sectionId: { type: 'string' },
+        imageUrls: { type: 'array', items: { type: 'string' }, description: 'Pełna lista URL-i zdjęć w nowej kolejności' },
+      },
+      required: ['sectionId', 'imageUrls'],
+    },
+  },
+  {
+    name: 'add_image_to_section',
+    description: 'Dodaje zdjęcie (URL) do sekcji opisu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sectionId: { type: 'string' },
+        imageUrl: { type: 'string' },
+      },
+      required: ['sectionId', 'imageUrl'],
+    },
+  },
+  {
+    name: 'remove_image_from_section',
+    description: 'Usuwa zdjęcie (URL) z sekcji opisu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sectionId: { type: 'string' },
+        imageUrl: { type: 'string' },
+      },
+      required: ['sectionId', 'imageUrl'],
+    },
+  },
+  // ─── Regeneracje i zmiana stylu ───
+  {
+    name: 'regenerate_description',
+    description: 'Generuje opis od nowa z obecnymi danymi (ew. innym stylem / dodatkowym kontekstem). Użyj gdy user prosi "wygeneruj od nowa", "napisz inaczej".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        style: { type: 'string', enum: ['technical', 'lifestyle', 'simple'] },
+        additionalContext: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'regenerate_title',
+    description: 'Generuje tytuł od nowa (3-5 kandydatów). Użyj gdy user prosi "inny tytuł", "wygeneruj tytuł".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        additionalContext: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'change_description_style',
+    description: 'Zmienia globalny styl opisu (technical/lifestyle/simple) i natychmiast regeneruje.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        style: { type: 'string', enum: ['technical', 'lifestyle', 'simple'] },
+      },
+      required: ['style'],
+    },
+  },
+  // ─── Scrape z URL konkurenta ───
+  {
+    name: 'scrape_and_fill_from_url',
+    description: 'Prosi frontend o pobranie danych z podanego URL (konkurencyjna oferta) i auto-fill parametrów. Użyj gdy user wkleja link.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Pełny URL do strony produktu' },
+      },
+      required: ['url'],
+    },
+  },
+  // ─── Pytanie do usera ───
+  {
+    name: 'ask_user',
+    description: 'Zadaje konkretne pytanie do usera (zamiast zgadywać) i kończy turę — czeka na odpowiedź w chacie. Użyj przed generate_description jeśli brakuje kluczowych informacji (styl, przeznaczenie, stan).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'Treść pytania po polsku' },
+        options: { type: 'array', items: { type: 'string' }, description: 'Opcjonalne gotowe odpowiedzi do wyboru' },
+      },
+      required: ['question'],
+    },
+  },
+  // ─── Pola produktu ───
+  {
+    name: 'update_price',
+    description: 'Ustawia cenę produktu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        price: { type: 'string', description: 'Kwota (np. "129.99")' },
+        currency: { type: 'string', description: 'Waluta (np. "PLN"), opcjonalne' },
+      },
+      required: ['price'],
+    },
+  },
+  {
+    name: 'update_tax_rate',
+    description: 'Ustawia stawkę VAT produktu (%).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        taxRate: { oneOf: [{ type: 'number' }, { type: 'string' }] },
+      },
+      required: ['taxRate'],
+    },
+  },
+  {
+    name: 'update_sku',
+    description: 'Ustawia SKU produktu.',
+    input_schema: {
+      type: 'object',
+      properties: { sku: { type: 'string' } },
+      required: ['sku'],
+    },
+  },
+  {
+    name: 'update_ean',
+    description: 'Ustawia EAN produktu.',
+    input_schema: {
+      type: 'object',
+      properties: { ean: { type: 'string' } },
+      required: ['ean'],
+    },
+  },
+  {
+    name: 'update_inventory',
+    description: 'Ustawia katalog BaseLinker (inventory_id) i/lub magazyn (warehouseId).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        inventoryId: { type: 'number' },
+        warehouseId: { type: 'string' },
+      },
+    },
+  },
+  // ─── Zdjęcia główne produktu ───
+  {
+    name: 'reorder_product_images',
+    description: 'Zmienia kolejność zdjęć głównych produktu (cała galeria).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        imageUrls: { type: 'array', items: { type: 'string' }, description: 'Pełna lista URL-i w nowej kolejności' },
+      },
+      required: ['imageUrls'],
+    },
+  },
+  {
+    name: 'add_product_image',
+    description: 'Dodaje zdjęcie (URL) do galerii głównej produktu.',
+    input_schema: {
+      type: 'object',
+      properties: { imageUrl: { type: 'string' } },
+      required: ['imageUrl'],
+    },
+  },
+  {
+    name: 'remove_product_image',
+    description: 'Usuwa zdjęcie (URL) z galerii głównej produktu.',
+    input_schema: {
+      type: 'object',
+      properties: { imageUrl: { type: 'string' } },
+      required: ['imageUrl'],
+    },
+  },
 ];
 
 const TOOL_LABELS: Record<string, string> = {
@@ -205,6 +419,25 @@ const TOOL_LABELS: Record<string, string> = {
   update_section: 'Aktualizuję sekcję...',
   add_section: 'Dodaję sekcję...',
   remove_section: 'Usuwam sekcję...',
+  expand_section: 'Rozszerzam sekcję...',
+  reorder_sections: 'Zmieniam kolejność sekcji...',
+  change_section_layout: 'Zmieniam layout sekcji...',
+  reorder_section_images: 'Zmieniam kolejność zdjęć...',
+  add_image_to_section: 'Dodaję zdjęcie do sekcji...',
+  remove_image_from_section: 'Usuwam zdjęcie z sekcji...',
+  regenerate_description: 'Regeneruję opis...',
+  regenerate_title: 'Regeneruję tytuł...',
+  change_description_style: 'Zmieniam styl opisu...',
+  scrape_and_fill_from_url: 'Pobieram dane z URL...',
+  ask_user: 'Pytam użytkownika...',
+  update_price: 'Ustawiam cenę...',
+  update_tax_rate: 'Ustawiam VAT...',
+  update_sku: 'Ustawiam SKU...',
+  update_ean: 'Ustawiam EAN...',
+  update_inventory: 'Ustawiam katalog...',
+  reorder_product_images: 'Zmieniam kolejność zdjęć produktu...',
+  add_product_image: 'Dodaję zdjęcie produktu...',
+  remove_product_image: 'Usuwam zdjęcie produktu...',
 };
 
 // ─── System prompt ───
@@ -270,11 +503,44 @@ Tytuł przychodzi już z scrapera + tłumacza. Wywołaj generate_title TYLKO gdy
 - Pisz PO POLSKU, z poprawnymi znakami diakrytycznymi (ą, ć, ę, ł, ń, ó, ś, ź, ż).
 
 ## TRYB EDYCJI (mode=chat po wygenerowaniu opisu):
-- "zmień X" → update_parameter, a jeśli X wpływa na opis → też update_section
-- "skróć/rozbuduj Y" → update_section z nową treścią
+Masz pełną kontrolę nad ofertą — wybierz PRECYZYJNY tool do konkretnej prośby:
+
+### Opis / sekcje
+- "zmień treść sekcji X" → update_section (bodyHtml + heading)
+- "rozbuduj / rozszerz sekcję X" → expand_section (pełna nowa bodyHtml z dopisanymi info)
 - "dodaj sekcję Z" → add_section
 - "usuń sekcję" → remove_section
-- Zawsze potwierdzaj co zmieniłeś
+- "przenieś sekcję X przed Y" / "pouklada sekcje" → reorder_sections (pełna lista ID w nowej kolejności)
+- "zmień layout sekcji" (image-text / text-only / images-only) → change_section_layout
+- "zmień kolejność zdjęć w sekcji" → reorder_section_images (pełna lista URL)
+- "dodaj zdjęcie 2 do sekcji X" → add_image_to_section
+- "usuń zdjęcie z sekcji X" → remove_image_from_section
+- "wygeneruj opis od nowa" / "napisz inaczej" → regenerate_description (opcjonalnie style + additionalContext)
+- "zmień styl na lifestyle/technical/simple" → change_description_style
+- "wygeneruj inny tytuł" → regenerate_title
+
+### Parametry, pola produktu
+- "zmień parametr X na Y" → update_parameter
+- "zmień tytuł" → update_title (jeśli znasz końcowy) lub regenerate_title (jeśli agent ma zaproponować)
+- "zmień cenę" → update_price
+- "zmień VAT / stawkę podatku" → update_tax_rate
+- "zmień SKU / EAN" → update_sku / update_ean
+- "zmień katalog / magazyn" → update_inventory
+
+### Zdjęcia główne produktu
+- "pouklada zdjęcia" → reorder_product_images
+- "dodaj zdjęcie z URL" → add_product_image
+- "usuń zdjęcie" → remove_product_image
+
+### Komunikacja z userem
+- Brakuje kluczowych informacji do dobrego opisu (styl, stan, przeznaczenie)? NIE zgaduj — użyj ask_user (opcjonalnie z options).
+- User wkleił URL (konkurencyjna oferta, strona producenta) → scrape_and_fill_from_url
+- Potwierdzaj krótko co zmieniłeś (1 zdanie, bez narracji krok-po-kroku)
+
+### PREFLIGHT (przed pierwszym generate_description)
+Jeśli w danych brakuje informacji o STYLU ("lifestyle" dla mebli/dekoracji, "technical" dla AGD/narzędzi, "simple" dla reszty)
+lub o STANIE produktu — zadaj jedno pytanie ask_user zanim wywołasz generate_description.
+Gdy masz wystarczająco danych (np. kategoria jasno wskazuje styl) — generuj od razu, nie pytaj zbędnie.
 
 ## ZASADY PARAMETRÓW:
 - Dictionary → zwracaj WYŁĄCZNIE option_id (np. "225088"), NIGDY nazwę opcji
@@ -308,6 +574,16 @@ ${paramsText}
 
 // ─── Tool executor ───
 
+const GATE_BLOCKED_TOOLS = new Set([
+  'analyze_images', 'fetch_category_parameters', 'fill_parameters',
+  'validate_parameters', 'generate_title', 'generate_description',
+  'update_section', 'add_section', 'remove_section',
+  // Opis/tytuł — blokujemy do czasu wybrania kategorii
+  'expand_section', 'reorder_sections', 'change_section_layout',
+  'reorder_section_images', 'add_image_to_section', 'remove_image_from_section',
+  'regenerate_description', 'regenerate_title', 'change_description_style',
+]);
+
 async function executeTool(
   toolName: string,
   input: Record<string, unknown>,
@@ -317,6 +593,13 @@ async function executeTool(
   sessionKey: string,
   apiKey: string,
 ): Promise<string> {
+  if (GATE_BLOCKED_TOOLS.has(toolName) && !state.session.allegroCategory?.id) {
+    return JSON.stringify({
+      error: 'GATE: kategoria nie jest wybrana. Wywołaj suggest_category i zakończ turę — czekaj na potwierdzenie usera w UI.',
+      awaiting_user_selection: true,
+    });
+  }
+
   switch (toolName) {
     case 'analyze_images': {
       const urls = (input.imageUrls as string[]) ?? state.session.data?.images ?? [];
@@ -375,7 +658,7 @@ async function executeTool(
         commission: s.commission,
       }));
 
-      sseWrite({ type: 'category_suggestions_ready', suggestions: top5 });
+      sseWrite({ type: 'category_suggestions_ready', suggestions: top5, awaiting: true });
 
       return JSON.stringify({
         suggestions: top5,
@@ -538,6 +821,177 @@ async function executeTool(
       const { sectionId } = input as { sectionId: string };
       sseWrite({ type: 'action', action: { type: 'remove_section', sectionId } as ChatAction });
       return JSON.stringify({ removed: true, sectionId });
+    }
+
+    case 'expand_section': {
+      const { sectionId, heading, bodyHtml } = input as { sectionId: string; heading?: string; bodyHtml: string };
+      sseWrite({ type: 'action', action: { type: 'expand_section', sectionId, heading, bodyHtml } as ChatAction });
+      return JSON.stringify({ expanded: true, sectionId });
+    }
+
+    case 'reorder_sections': {
+      const { sectionIds } = input as { sectionIds: string[] };
+      if (!Array.isArray(sectionIds) || sectionIds.length === 0) {
+        return JSON.stringify({ error: 'sectionIds jest wymagane i nie może być puste' });
+      }
+      sseWrite({ type: 'action', action: { type: 'reorder_sections', sectionIds } as ChatAction });
+      return JSON.stringify({ reordered: true, count: sectionIds.length });
+    }
+
+    case 'change_section_layout': {
+      const { sectionId, layout } = input as { sectionId: string; layout: 'image-text' | 'text-only' | 'images-only' };
+      sseWrite({ type: 'action', action: { type: 'change_section_layout', sectionId, layout } as ChatAction });
+      return JSON.stringify({ updated: true, sectionId, layout });
+    }
+
+    case 'reorder_section_images': {
+      const { sectionId, imageUrls } = input as { sectionId: string; imageUrls: string[] };
+      sseWrite({ type: 'action', action: { type: 'reorder_section_images', sectionId, imageUrls } as ChatAction });
+      return JSON.stringify({ reordered: true, sectionId, count: imageUrls.length });
+    }
+
+    case 'add_image_to_section': {
+      const { sectionId, imageUrl } = input as { sectionId: string; imageUrl: string };
+      sseWrite({ type: 'action', action: { type: 'add_image_to_section', sectionId, imageUrl } as ChatAction });
+      return JSON.stringify({ added: true, sectionId });
+    }
+
+    case 'remove_image_from_section': {
+      const { sectionId, imageUrl } = input as { sectionId: string; imageUrl: string };
+      sseWrite({ type: 'action', action: { type: 'remove_image_from_section', sectionId, imageUrl } as ChatAction });
+      return JSON.stringify({ removed: true, sectionId });
+    }
+
+    case 'regenerate_description':
+    case 'change_description_style': {
+      const style = (input.style as 'technical' | 'lifestyle' | 'simple' | undefined);
+      const additionalContext = input.additionalContext as string | undefined;
+      const { sections, fullHtml, inputHash, usage } = await generateDescription({
+        session: { ...state.session, filledParameters: state.filledParameters, generatedTitle: state.generatedTitle || state.session.generatedTitle },
+        imagesMeta: state.imagesMeta,
+        style,
+        additionalContext,
+      }, apiKey);
+
+      logTokenUsage({ productId, sessionKey, toolName, model: DESCRIPTION_MODEL, usage });
+      addUsage(state, DESCRIPTION_MODEL, usage);
+      state.generatedSections = sections;
+      sseWrite({ type: 'description_generated', sections, fullHtml, inputHash });
+      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, DESCRIPTION_MODEL) });
+      if (toolName === 'change_description_style' && style) {
+        sseWrite({ type: 'action', action: { type: 'change_description_style', styleValue: style } as ChatAction });
+      }
+      return JSON.stringify({ regenerated: true, sections: sections.length, style: style ?? 'default' });
+    }
+
+    case 'regenerate_title': {
+      const { title, candidates, usage } = await generateTitle(
+        { ...state.session, filledParameters: state.filledParameters },
+        state.imagesMeta,
+        input.additionalContext as string | undefined,
+        apiKey,
+      );
+      logTokenUsage({ productId, sessionKey, toolName, model: TITLE_MODEL, usage });
+      addUsage(state, TITLE_MODEL, usage);
+      state.generatedTitle = title;
+      state.session = { ...state.session, generatedTitle: title, titleCandidates: candidates };
+      sseWrite({ type: 'title_generated', title, candidates });
+      sseWrite({ type: 'session_patch', patch: { generatedTitle: title, titleCandidates: candidates } });
+      sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, TITLE_MODEL) });
+      return JSON.stringify({ regenerated: true, title, candidates: candidates.length });
+    }
+
+    case 'scrape_and_fill_from_url': {
+      const url = input.url as string;
+      if (!url) return JSON.stringify({ error: 'Brak URL' });
+      sseWrite({ type: 'action', action: { type: 'request_scrape', scrapeUrl: url } as ChatAction });
+      return JSON.stringify({ requested: true, url, note: 'Frontend pobierze stronę i auto-uzupełni parametry. Poczekaj na potwierdzenie w kolejnej wiadomości usera.' });
+    }
+
+    case 'ask_user': {
+      const question = input.question as string;
+      const options = (input.options as string[] | undefined) ?? [];
+      sseWrite({ type: 'action', action: { type: 'ask_user', question, options } as ChatAction });
+      // Agent should end turn after asking — return marker
+      return JSON.stringify({ asked: true, question, awaiting_user_response: true, instruction: 'STOP. Zakończ turę i czekaj na odpowiedź usera.' });
+    }
+
+    case 'update_price': {
+      const { price, currency } = input as { price: string; currency?: string };
+      state.session = {
+        ...state.session,
+        data: { ...state.session.data, price, currency: currency ?? state.session.data?.currency },
+      };
+      sseWrite({ type: 'action', action: { type: 'update_price', priceValue: price, currencyValue: currency } as ChatAction });
+      sseWrite({ type: 'session_patch', patch: { data: state.session.data } });
+      return JSON.stringify({ updated: true, price, currency: currency ?? null });
+    }
+
+    case 'update_tax_rate': {
+      const { taxRate } = input as { taxRate: number | string };
+      state.session = { ...state.session, tax_rate: taxRate };
+      sseWrite({ type: 'action', action: { type: 'update_tax_rate', taxRateValue: taxRate } as ChatAction });
+      sseWrite({ type: 'session_patch', patch: { tax_rate: taxRate } });
+      return JSON.stringify({ updated: true, taxRate });
+    }
+
+    case 'update_sku': {
+      const { sku } = input as { sku: string };
+      state.session = {
+        ...state.session,
+        data: { ...state.session.data, sku },
+      };
+      sseWrite({ type: 'action', action: { type: 'update_sku', skuValue: sku } as ChatAction });
+      sseWrite({ type: 'session_patch', patch: { data: state.session.data } });
+      return JSON.stringify({ updated: true, sku });
+    }
+
+    case 'update_ean': {
+      const { ean } = input as { ean: string };
+      state.session = {
+        ...state.session,
+        data: { ...state.session.data, ean },
+      };
+      sseWrite({ type: 'action', action: { type: 'update_ean', eanValue: ean } as ChatAction });
+      sseWrite({ type: 'session_patch', patch: { data: state.session.data } });
+      return JSON.stringify({ updated: true, ean });
+    }
+
+    case 'update_inventory': {
+      const { inventoryId, warehouseId } = input as { inventoryId?: number; warehouseId?: string };
+      const patch: Partial<ProductSession> = {};
+      if (inventoryId !== undefined) {
+        state.session = { ...state.session, inventoryId };
+        patch.inventoryId = inventoryId;
+      }
+      if (warehouseId !== undefined) {
+        state.session = { ...state.session, defaultWarehouse: warehouseId };
+        patch.defaultWarehouse = warehouseId;
+      }
+      sseWrite({ type: 'action', action: { type: 'update_inventory', inventoryId, warehouseId } as ChatAction });
+      if (Object.keys(patch).length) sseWrite({ type: 'session_patch', patch });
+      return JSON.stringify({ updated: true, inventoryId, warehouseId });
+    }
+
+    case 'reorder_product_images': {
+      const { imageUrls } = input as { imageUrls: string[] };
+      if (!Array.isArray(imageUrls) || !imageUrls.length) {
+        return JSON.stringify({ error: 'imageUrls wymagane' });
+      }
+      sseWrite({ type: 'action', action: { type: 'reorder_product_images', imageUrls } as ChatAction });
+      return JSON.stringify({ reordered: true, count: imageUrls.length });
+    }
+
+    case 'add_product_image': {
+      const { imageUrl } = input as { imageUrl: string };
+      sseWrite({ type: 'action', action: { type: 'add_product_image', imageUrl } as ChatAction });
+      return JSON.stringify({ added: true, imageUrl });
+    }
+
+    case 'remove_product_image': {
+      const { imageUrl } = input as { imageUrl: string };
+      sseWrite({ type: 'action', action: { type: 'remove_product_image', imageUrl } as ChatAction });
+      return JSON.stringify({ removed: true, imageUrl });
     }
 
     default:

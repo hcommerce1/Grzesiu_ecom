@@ -1,4 +1,4 @@
-const VISION_MODEL = 'claude-opus-4-6';
+const VISION_MODEL = 'claude-sonnet-4-6';
 
 export interface ImageAnalysisResult {
   url: string;

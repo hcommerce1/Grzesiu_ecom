@@ -1,20 +1,19 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, Sparkles, X, CheckCircle2, ImageIcon, AlertCircle, Link2 } from "lucide-react"
+import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, X, CheckCircle2, ImageIcon, AlertCircle, Link2, AlertTriangle, ChevronLeft, ChevronRight, History, Settings, Target, Check, HelpCircle } from "lucide-react"
 import { CategorySelector } from "./CategorySelector"
 import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
 import { ApprovalDrawer } from "./ApprovalDrawer"
 import { PreviewContainer } from "./previews/PreviewContainer"
 import { ImageManagementStep } from "./ImageManagementStep"
-import { DescriptionGenerationStep } from "./DescriptionGenerationStep"
-import { ClaudeChat } from "./ClaudeChat"
 import { AgentPanel } from "./AgentPanel"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
-import { compileSectionsToHtml } from "@/lib/description-utils"
+import { compileSectionsToHtml, buildInputSnapshot, classifyChangesDetailed } from "@/lib/description-utils"
+import { DEFAULT_DESCRIPTION_PROMPT } from "@/lib/description-prompt"
 import type {
   ProductSession,
   AllegroCategory,
@@ -32,7 +31,11 @@ import type {
   BLProductType,
   TargetableSection,
   ChatAction,
+  DescriptionVersion,
+  ChangeClassification,
 } from "@/lib/types"
+
+const MAX_DESCRIPTION_VERSIONS = 20
 
 interface Props {
   productData: ProductData
@@ -62,12 +65,7 @@ const STEPS: { key: Step; label: string; icon: React.ReactNode }[] = [
   { key: "approval", label: "Wyślij", icon: <Send className="size-3.5" /> },
 ]
 
-// Dynamic label helper — used in render
-function getApprovalLabel(onSaveTemplate?: (session: ProductSession) => void): string {
-  return onSaveTemplate ? "Zapisz template" : "Wyślij"
-}
-
-export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone, onSaveTemplate, onSubmitSuccess, referenceDescription }: Props) {
+export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone, onSaveTemplate, onSubmitSuccess }: Props) {
   const [currentStep, setCurrentStep] = useState<Step>("inventory")
   const [session, setSession] = useState<ProductSession | null>(null)
   const [blCache, setBlCache] = useState<BLCache | null>(null)
@@ -75,7 +73,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [sheetMatchResults, setSheetMatchResults] = useState<ParameterMatchResult[]>([])
-  const [sheetSuggestedValues, setSheetSuggestedValues] = useState<Record<string, string | string[]>>({})
+  const [, setSheetSuggestedValues] = useState<Record<string, string | string[]>>({})
   const [showApproval, setShowApproval] = useState(false)
   const [successId, setSuccessId] = useState<number | null>(null)
   const [selectedInventoryId, setSelectedInventoryId] = useState<number | undefined>()
@@ -214,6 +212,38 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       return [...prev, section]
     })
   }, [])
+
+  // ─── Description versioning (lifted from old DescriptionGenerationStep) ───
+  const [descriptionVersions, setDescriptionVersions] = useState<DescriptionVersion[]>([])
+  const [versionIndex, setVersionIndex] = useState(-1) // -1 = live (current)
+
+  const pushDescriptionVersion = useCallback(
+    (desc: GeneratedDescription, titleVal: string, label?: string) => {
+      setDescriptionVersions(prev => {
+        const v: DescriptionVersion = {
+          sections: desc.sections,
+          fullHtml: desc.fullHtml,
+          title: titleVal,
+          timestamp: new Date().toISOString(),
+          label,
+        }
+        const next = [...prev, v]
+        if (next.length > MAX_DESCRIPTION_VERSIONS) next.shift()
+        updateSession({ descriptionVersions: next }).catch(() => {/* non-fatal */})
+        return next
+      })
+      setVersionIndex(-1)
+    },
+    [],
+  )
+
+  // ─── Change detection ───
+  const [changeClassification, setChangeClassification] = useState<ChangeClassification>({ severity: 'none', changes: [] })
+  const [showChangeBanner, setShowChangeBanner] = useState(false)
+
+  // ─── Prompt editor (migrated from localStorage to ProductSession.descriptionPrompt) ───
+  const [promptOpen, setPromptOpen] = useState(false)
+  const [promptText, setPromptText] = useState(DEFAULT_DESCRIPTION_PROMPT)
 
   // Chat section handlers (for ClaudeChat operating on generatedDescription)
   const handleChatSectionUpdate = useCallback(
@@ -363,6 +393,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           if (d.session.filledParameters) setLocalParameters(d.session.filledParameters)
           if (d.session.allegroParameters) setParameters(d.session.allegroParameters)
           if (d.session.aiFillResults?.length) { setAiFillResults(d.session.aiFillResults); setAiFillStatus('done') }
+          if (d.session.descriptionVersions?.length) setDescriptionVersions(d.session.descriptionVersions)
+          if (d.session.descriptionPrompt) setPromptText(d.session.descriptionPrompt)
           if (d.session.extraFieldValues) setExtraFieldValues(d.session.extraFieldValues)
           if (d.session.editableFieldValues) setEditableFieldValues(d.session.editableFieldValues)
           if (d.session.tax_rate != null) setLocalTaxRate(d.session.tax_rate)
@@ -971,62 +1003,257 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           </div>
         )
 
-      case "preview":
+      case "preview": {
+        // Prompt editor full-screen modal (taking over preview step)
+        if (promptOpen) {
+          return (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Edytuj prompt generowania opisu</h3>
+                <Button variant="ghost" size="sm" onClick={() => setPromptOpen(false)}>
+                  <X className="size-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Prompt jest zapisywany w sesji produktu — zmiany zostają do zakończenia edycji.
+              </p>
+              <textarea
+                value={promptText}
+                onChange={(e) => setPromptText(e.target.value)}
+                rows={20}
+                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs font-mono outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/20 resize-y"
+              />
+              <div className="flex items-center justify-between">
+                <Button variant="ghost" size="sm" onClick={handlePromptReset} className="text-muted-foreground">
+                  Przywróć domyślny
+                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setPromptOpen(false)}>
+                    Anuluj
+                  </Button>
+                  <Button size="sm" onClick={handlePromptSave} className="gap-1.5">
+                    <Check className="size-3.5" />
+                    Zapisz
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )
+        }
+
+        const sections = generatedDescription?.sections ?? []
+        const isTitleTargeted = targetedSections.some(s => s.id === 'title')
+        const missingRequired = parameters.filter(p => p.required && !localParameters[p.id])
+
         return (
           <div className="space-y-4">
-            <DescriptionGenerationStep
-              title={localTitle}
-              translatedData={{
-                title: productData.title,
-                attributes: productData.attributes,
-              }}
-              imagesMeta={imagesMeta}
-              filledParameters={localParameters}
-              categoryPath={session?.allegroCategory?.path || ""}
-              categoryId={session?.allegroCategory?.id || ""}
-              descriptionPrompt={session?.descriptionPrompt}
-              allegroParameters={parameters}
-              sheetMeta={sheetMeta}
-              generatedDescription={generatedDescription}
-              previousSnapshot={descriptionSnapshot}
-              titleCandidates={titleCandidates}
-              onDescriptionChange={(desc) => {
-                setGeneratedDescription(desc)
-                updateSession({ generatedDescription: desc })
-              }}
-              onSnapshotChange={(snapshot) => {
-                setDescriptionSnapshot(snapshot)
-                updateSession({ descriptionInputSnapshot: snapshot })
-              }}
-              onTitleChange={(title) => {
-                setLocalTitle(title)
-                setIsTitleGenerated(true)
-                updateSession({ generatedTitle: title })
-              }}
-              onCandidatesChange={setTitleCandidates}
-              onParameterChange={handleParameterChangeFromChat}
-              targetedSections={targetedSections}
-              onSectionTargetToggle={toggleTargetedSection}
-              bundleContext={productData.bundleContextText}
-              referenceDescription={referenceDescription}
-              originalDescription={productData.description}
-              price={productData.price}
-              currency={productData.currency}
-              ean={productData.ean}
-              sku={productData.sku}
-              productUrl={productData.url}
-              previewSlot={
-                generatedDescription?.fullHtml ? (
-                  <PreviewContainer
-                    title={localTitle}
-                    fullHtml={generatedDescription.fullHtml}
-                    imagesMeta={imagesMeta}
-                    parameters={localParameters}
-                    parameterDefs={session?.allegroParameters ?? []}
-                  />
-                ) : null
-              }
-            />
+            {/* ═══ Banner: brakujące wymagane parametry ═══ */}
+            {missingRequired.length > 0 && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+                <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+                <span>
+                  Brakuje <strong>{missingRequired.length}</strong> wymaganych parametrów. Wróć do kroku &bdquo;Parametry&rdquo; lub poproś asystenta, żeby je uzupełnił.
+                </span>
+              </div>
+            )}
+
+            {/* ═══ Banner: wykryto zmiany od ostatniej generacji ═══ */}
+            {showChangeBanner && changeClassification.severity !== 'none' && (
+              <div className={cn(
+                "flex items-center justify-between gap-3 px-4 py-2.5 rounded-lg border",
+                changeClassification.severity === 'major'
+                  ? 'border-amber-300 bg-amber-50 text-amber-800'
+                  : 'border-blue-200 bg-blue-50 text-blue-700'
+              )}>
+                <div className="flex items-center gap-2 text-sm">
+                  <AlertTriangle className="size-4 shrink-0" />
+                  <span>
+                    {changeClassification.severity === 'major'
+                      ? 'Wykryto istotne zmiany od ostatniej generacji — opis może być nieaktualny'
+                      : 'Dane zmienione od ostatniej generacji'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setShowChangeBanner(false)}>
+                    Ignoruj
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => toast.info('Poproś asystenta: "wygeneruj opis od nowa"')}
+                  >
+                    <RefreshCw className="size-3" />
+                    Jak regenerować?
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* ═══ Toolbar: version nav + prompt editor ═══ */}
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2">
+              <div className="flex items-center gap-2">
+                {descriptionVersions.length > 0 && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2"
+                      onClick={() => navigateVersion(-1)}
+                      disabled={versionIndex === 0}
+                      title="Poprzednia wersja"
+                    >
+                      <ChevronLeft className="size-3.5" />
+                    </Button>
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <History className="size-3" />
+                      {versionIndex === -1
+                        ? `Live (${descriptionVersions.length} w historii)`
+                        : `Wersja ${versionIndex + 1}/${descriptionVersions.length}`}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2"
+                      onClick={() => navigateVersion(1)}
+                      disabled={versionIndex === -1}
+                      title="Następna wersja"
+                    >
+                      <ChevronRight className="size-3.5" />
+                    </Button>
+                  </>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => setPromptOpen(true)}
+              >
+                <Settings className="size-3.5" />
+                Prompt
+              </Button>
+            </div>
+
+            {/* ═══ Tytuł (edytowalny) + candidates ═══ */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Tytuł aukcji
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-xs",
+                    localTitle.length > 75 ? "text-destructive font-semibold" : "text-muted-foreground"
+                  )}>
+                    {localTitle.length}/75
+                  </span>
+                  <button
+                    onClick={() => toggleTargetedSection({ id: 'title', label: 'Tytuł', type: 'title' })}
+                    className={cn(
+                      "flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors",
+                      isTitleTargeted
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:border-primary/40"
+                    )}
+                    title="Zaznacz żeby asystent edytował tylko tytuł"
+                  >
+                    <Target className="size-2.5" />
+                    {isTitleTargeted ? 'Zaznaczono' : 'Zaznacz'}
+                  </button>
+                </div>
+              </div>
+              <input
+                type="text"
+                value={localTitle}
+                onChange={(e) => {
+                  setLocalTitle(e.target.value)
+                  setIsTitleGenerated(true)
+                }}
+                onBlur={() => updateSession({ generatedTitle: localTitle }).catch(() => {/* non-fatal */})}
+                className="w-full text-sm font-medium rounded-lg border border-input bg-background px-3 py-2 outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/20"
+                placeholder="Tytuł aukcji (max 75 znaków)"
+              />
+              {titleCandidates.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="text-[10px] text-muted-foreground self-center mr-1">Kandydaci:</span>
+                  {titleCandidates.map((cand, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        setLocalTitle(cand)
+                        setIsTitleGenerated(true)
+                        updateSession({ generatedTitle: cand }).catch(() => {/* non-fatal */})
+                      }}
+                      className="text-xs px-2 py-1 rounded-full border border-border bg-background hover:border-primary/40 hover:bg-primary/5 transition-colors truncate max-w-full"
+                      title={cand}
+                    >
+                      {cand.length > 50 ? cand.slice(0, 50) + '…' : cand}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* ═══ Sekcje opisu — klikalne chipsy do targetingu ═══ */}
+            {sections.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Sekcje opisu ({sections.length})
+                  </label>
+                  {targetedSections.length > 0 && (
+                    <button
+                      onClick={() => setTargetedSections([])}
+                      className="text-[10px] text-muted-foreground hover:text-foreground underline"
+                    >
+                      Wyczyść zaznaczenie
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sections.map((s) => {
+                    const isTargeted = targetedSections.some(t => t.id === s.id)
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => toggleTargetedSection({ id: s.id, label: s.heading || 'Sekcja', type: 'description-section' })}
+                        className={cn(
+                          "flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border transition-colors",
+                          isTargeted
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:border-primary/40"
+                        )}
+                      >
+                        <Target className="size-2.5" />
+                        {s.heading || 'Bez tytułu'}
+                      </button>
+                    )
+                  })}
+                </div>
+                {targetedSections.length > 0 && (
+                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    <HelpCircle className="size-3" />
+                    Zaznaczone sekcje trafią w prefix wiadomości do asystenta (&bdquo;[Dotyczy: …]&rdquo;).
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* ═══ Podgląd marketplace ═══ */}
+            {generatedDescription?.fullHtml ? (
+              <PreviewContainer
+                title={localTitle}
+                fullHtml={generatedDescription.fullHtml}
+                imagesMeta={imagesMeta}
+                parameters={localParameters}
+                parameterDefs={session?.allegroParameters ?? []}
+              />
+            ) : (
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
+                <Loader2 className="size-6 mx-auto mb-2 animate-spin opacity-50" />
+                Asystent po prawej generuje opis — po ukończeniu pojawi się tu podgląd.
+              </div>
+            )}
 
             <Button
               onClick={async () => {
@@ -1040,12 +1267,14 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 })
                 goToStep("approval")
               }}
+              disabled={!generatedDescription?.fullHtml}
               className="w-full"
             >
               Zatwierdź i wyślij →
             </Button>
           </div>
         )
+      }
 
       case "approval":
         return (
@@ -1098,6 +1327,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   // Agent action handler — maps agent SSE actions to BaselinkerWorkflowPanel state
   function handleAgentAction(action: ChatAction) {
     switch (action.type) {
+      // ─── Parametry / tytuł ───
       case 'update_parameter':
         if (action.parameterId && action.parameterValue !== undefined) {
           handleParameterChangeFromChat(action.parameterId, action.parameterValue)
@@ -1110,8 +1340,11 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           updateSession({ generatedTitle: action.title }).catch(() => {/* non-fatal */})
         }
         break
+
+      // ─── Sekcje opisu ───
       case 'update_section':
-        handleChatSectionUpdate(action.sectionId!, action.heading, action.bodyHtml)
+      case 'expand_section':
+        if (action.sectionId) handleChatSectionUpdate(action.sectionId, action.heading, action.bodyHtml)
         break
       case 'add_section':
         handleChatSectionAdd(
@@ -1125,11 +1358,129 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       case 'change_section_layout':
         if (action.sectionId && action.layout) handleChatSectionLayoutChange(action.sectionId, action.layout)
         break
+      case 'reorder_sections':
+        if (action.sectionIds?.length) handleChatSectionsReorder(action.sectionIds)
+        break
+      case 'reorder_section_images':
+        if (action.sectionId && action.imageUrls) handleChatSectionImageReorder(action.sectionId, action.imageUrls)
+        break
+      case 'add_image_to_section':
+        if (action.sectionId && action.imageUrl) handleChatSectionImageAdd(action.sectionId, action.imageUrl)
+        break
+      case 'remove_image_from_section':
+        if (action.sectionId && action.imageUrl) handleChatSectionImageRemove(action.sectionId, action.imageUrl)
+        break
+
+      // ─── Regeneracje (AgentPanel wysłał już description_generated przed tą akcją, tu nic dodatkowego) ───
+      case 'regenerate_description':
+      case 'regenerate_title':
+      case 'change_description_style':
+        // description_generated / title_generated SSE already handled by AgentPanel callbacks
+        break
+
+      // ─── Scrape z URL ───
+      case 'request_scrape':
+        if (action.scrapeUrl) handleScrapeAndFillFromUrl(action.scrapeUrl)
+        break
+
+      // ─── Pola produktu ───
+      case 'update_price':
+        if (action.priceValue !== undefined && session?.data) {
+          const nextData = { ...session.data, price: action.priceValue, currency: action.currencyValue ?? session.data.currency }
+          updateSession({ data: nextData }).catch(() => {/* non-fatal */})
+          toast.success(`Cena ustawiona: ${action.priceValue}${action.currencyValue ? ' ' + action.currencyValue : ''}`)
+        }
+        break
+      case 'update_tax_rate':
+        if (action.taxRateValue !== undefined) {
+          setLocalTaxRate(action.taxRateValue)
+          updateSession({ tax_rate: action.taxRateValue }).catch(() => {/* non-fatal */})
+          toast.success(`VAT: ${action.taxRateValue}`)
+        }
+        break
+      case 'update_sku':
+        if (action.skuValue !== undefined && session?.data) {
+          updateSession({ data: { ...session.data, sku: action.skuValue } }).catch(() => {/* non-fatal */})
+          toast.success(`SKU: ${action.skuValue}`)
+        }
+        break
+      case 'update_ean':
+        if (action.eanValue !== undefined && session?.data) {
+          updateSession({ data: { ...session.data, ean: action.eanValue } }).catch(() => {/* non-fatal */})
+          toast.success(`EAN: ${action.eanValue}`)
+        }
+        break
+      case 'update_inventory':
+        if (action.inventoryId !== undefined) {
+          setSelectedInventoryId(action.inventoryId)
+          updateSession({ inventoryId: action.inventoryId }).catch(() => {/* non-fatal */})
+        }
+        if (action.warehouseId !== undefined) {
+          setSelectedWarehouse(action.warehouseId)
+          updateSession({ defaultWarehouse: action.warehouseId }).catch(() => {/* non-fatal */})
+        }
+        break
+
+      // ─── Zdjęcia główne produktu ───
+      case 'reorder_product_images':
+        if (action.imageUrls?.length) {
+          const urlOrder = new Map(action.imageUrls.map((u, i) => [u, i]))
+          setImagesMeta(prev => {
+            const next = [...prev].sort((a, b) => (urlOrder.get(a.url) ?? 999) - (urlOrder.get(b.url) ?? 999))
+              .map((m, i) => ({ ...m, order: i }))
+            updateSession({ imagesMeta: next }).catch(() => {/* non-fatal */})
+            return next
+          })
+          toast.success('Kolejność zdjęć zmieniona')
+        }
+        break
+      case 'add_product_image':
+        if (action.imageUrl) {
+          setImagesMeta(prev => {
+            const next: ImageMeta[] = [...prev, {
+              url: action.imageUrl!,
+              order: prev.length,
+              removed: false,
+              aiDescription: '',
+              aiConfidence: 0,
+              userDescription: '',
+              isFeatureImage: false,
+              features: [],
+            }]
+            updateSession({ imagesMeta: next }).catch(() => {/* non-fatal */})
+            return next
+          })
+          toast.success('Zdjęcie dodane')
+        }
+        break
+      case 'remove_product_image':
+        if (action.imageUrl) {
+          setImagesMeta(prev => {
+            const next = prev.map(m => m.url === action.imageUrl ? { ...m, removed: true } : m)
+            updateSession({ imagesMeta: next }).catch(() => {/* non-fatal */})
+            return next
+          })
+          toast.success('Zdjęcie usunięte')
+        }
+        break
+
+      // ─── Targeting & ask ───
+      case 'clear_targets':
+        setTargetedSections([])
+        break
+      case 'ask_user':
+        // AgentPanel renders the question in the chat stream (action is primarily informational here)
+        // Nothing to do in panel state — question is already visible to user.
+        break
     }
   }
 
   // Agent: description generated callback
   function handleAgentDescriptionGenerated(sections: DescriptionSection[], fullHtml: string) {
+    // Push previous version before replacing (cofanie zmian)
+    if (generatedDescription) {
+      pushDescriptionVersion(generatedDescription, localTitle, 'Przed regeneracją')
+    }
     const desc: GeneratedDescription = {
       sections,
       fullHtml,
@@ -1137,12 +1488,146 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       inputHash: '',
     }
     setGeneratedDescription(desc)
-    updateSession({ generatedDescription: desc }).catch(() => {/* non-fatal */})
+    // Zapisz snapshot (żeby change detection wiedział od czego porównywać)
+    const snapshot = buildInputSnapshot(
+      localTitle,
+      imagesMeta,
+      localParameters,
+      session?.allegroCategory?.id ?? '',
+      productData.attributes,
+    )
+    setDescriptionSnapshot(snapshot)
+    setChangeClassification({ severity: 'none', changes: [] })
+    setShowChangeBanner(false)
+    updateSession({ generatedDescription: desc, descriptionInputSnapshot: snapshot }).catch(() => {/* non-fatal */})
   }
+
+  // ─── Navigate description versions (undo / redo) ───
+  const navigateVersion = useCallback(
+    (dir: -1 | 1) => {
+      const total = descriptionVersions.length
+      if (total === 0) return
+
+      let newIdx: number
+      if (versionIndex === -1) {
+        if (dir === -1) newIdx = total - 1
+        else return
+      } else {
+        newIdx = versionIndex + dir
+        if (newIdx >= total) {
+          setVersionIndex(-1)
+          return
+        }
+        if (newIdx < 0) return
+      }
+
+      setVersionIndex(newIdx)
+      const v = descriptionVersions[newIdx]
+      if (v) {
+        setLocalTitle(v.title)
+        setIsTitleGenerated(true)
+        const desc: GeneratedDescription = {
+          sections: v.sections,
+          fullHtml: v.fullHtml,
+          generatedAt: v.timestamp,
+          inputHash: '',
+        }
+        setGeneratedDescription(desc)
+        updateSession({ generatedTitle: v.title, generatedDescription: desc }).catch(() => {/* non-fatal */})
+      }
+    },
+    [descriptionVersions, versionIndex],
+  )
+
+  // ─── Prompt editor (persisted in ProductSession.descriptionPrompt) ───
+  const handlePromptSave = useCallback(() => {
+    updateSession({ descriptionPrompt: promptText }).catch(() => {/* non-fatal */})
+    setPromptOpen(false)
+    toast.success('Prompt zapisany w sesji')
+  }, [promptText])
+
+  const handlePromptReset = useCallback(() => {
+    setPromptText(DEFAULT_DESCRIPTION_PROMPT)
+    updateSession({ descriptionPrompt: DEFAULT_DESCRIPTION_PROMPT }).catch(() => {/* non-fatal */})
+  }, [])
+
+  // ─── Change detection (re-run when inputs change after description generated) ───
+  useEffect(() => {
+    if (!generatedDescription || !descriptionSnapshot) {
+      setChangeClassification({ severity: 'none', changes: [] })
+      setShowChangeBanner(false)
+      return
+    }
+    const currentSnapshot = buildInputSnapshot(
+      localTitle,
+      imagesMeta,
+      localParameters,
+      session?.allegroCategory?.id ?? '',
+      productData.attributes,
+    )
+    const classification = classifyChangesDetailed(descriptionSnapshot, currentSnapshot)
+    setChangeClassification(classification)
+    setShowChangeBanner(classification.severity !== 'none')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localTitle, imagesMeta, localParameters, session?.allegroCategory?.id, generatedDescription])
+
+  // ─── Scrape & auto-fill from URL (migrated from ClaudeChat.handleScrapeAndFill) ───
+  const handleScrapeAndFillFromUrl = useCallback(
+    async (url: string) => {
+      toast.info(`Pobieram dane z ${url.slice(0, 40)}...`)
+      try {
+        const scrapeRes = await fetch('/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        })
+        const scrapeData = await scrapeRes.json()
+        if (!scrapeData.success) {
+          toast.error(`Nie udało się zescrapować strony: ${scrapeData.error ?? 'nieznany błąd'}`)
+          return
+        }
+        const unfilledParams = (parameters ?? []).filter(p => !localParameters?.[p.id])
+        if (unfilledParams.length === 0) {
+          toast.info('Wszystkie parametry już wypełnione')
+          return
+        }
+        // Reuse the same /api/ai-autofill endpoint that initial workflow uses (via BL bootstrap flow).
+        // This endpoint is the last solo AI route still in use after cleanup — powered by lib/ai-autofill.
+        const fillRes = await fetch('/api/ai-autofill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            productData: scrapeData.data,
+            parameters: unfilledParams,
+            alreadyFilled: localParameters ?? {},
+          }),
+        })
+        const fillData = await fillRes.json()
+        if (fillData.error) {
+          toast.error(`Błąd auto-fill: ${fillData.error}`)
+          return
+        }
+        const filled: Record<string, string | string[]> = fillData.filled ?? {}
+        if (Object.keys(filled).length === 0) {
+          toast.info('Pobrano dane, ale nie dopasowano żadnych parametrów')
+          return
+        }
+        setLocalParameters(prev => {
+          const merged = { ...prev, ...filled }
+          updateSession({ filledParameters: merged }).catch(() => {/* non-fatal */})
+          return merged
+        })
+        toast.success(`Auto-fill: dopasowano ${Object.keys(filled).length} parametrów`)
+      } catch (err) {
+        toast.error(`Błąd scrape: ${err instanceof Error ? err.message : 'nieznany'}`)
+      }
+    },
+    [parameters, localParameters],
+  )
 
   return (
     <>
-      <div className={`grid ${currentStep === 'preview' ? 'grid-cols-[1fr_420px_360px]' : 'grid-cols-[1fr_360px]'} gap-5`}>
+      <div className="grid grid-cols-[1fr_400px] gap-5">
         {/* Lewa kolumna: workflow */}
         <div className="rounded-xl ring-1 ring-foreground/10 bg-card overflow-hidden">
           {/* Header */}
@@ -1214,56 +1699,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           </div>
         </div>
 
-        {/* Prawa kolumna: sticky AI Chat — tylko na podglądzie */}
-        {currentStep === 'preview' && (
-          <div className="sticky top-[4.5rem] self-start" style={{ height: 'calc(100vh - 5rem)' }}>
-            <ClaudeChat
-              currentTitle={localTitle}
-              sections={generatedDescription?.sections || []}
-              currentParameters={localParameters}
-              imagesMeta={imagesMeta}
-              allegroParameters={parameters}
-              onTitleChange={(t) => {
-                setLocalTitle(t)
-                updateSession({ generatedTitle: t })
-              }}
-              onParameterChange={handleParameterChangeFromChat}
-              onSectionUpdate={handleChatSectionUpdate}
-              onSectionImageReorder={handleChatSectionImageReorder}
-              onSectionRemove={handleChatSectionRemove}
-              onSectionAdd={handleChatSectionAdd}
-              onSectionLayoutChange={handleChatSectionLayoutChange}
-              onSectionsReorder={handleChatSectionsReorder}
-              onSectionImageAdd={handleChatSectionImageAdd}
-              onSectionImageRemove={handleChatSectionImageRemove}
-              autoAskUnfilled={
-                !!(parameters?.some(p =>
-                  p.required && !localParameters[p.id]
-                ))
-              }
-              productData={{
-                title: productData.title,
-                description: productData.description,
-                attributes: productData.attributes,
-              }}
-              originalDescription={productData.description}
-              price={productData.price}
-              currency={productData.currency}
-              ean={productData.ean}
-              sku={productData.sku}
-              productUrl={productData.url}
-              targetedSections={targetedSections}
-              onRemoveTargetedSection={(id) => setTargetedSections(prev => prev.filter(s => s.id !== id))}
-              onClearTargets={() => setTargetedSections([])}
-              stanTechniczny={sheetMeta?.stanTechniczny}
-              uwagi={[sheetMeta?.uwagiKrotkie, sheetMeta?.uwagiMagazynowe].filter(Boolean).join(' | ')}
-              className="flex flex-col h-full"
-              style={{ height: '100%' }}
-            />
-          </div>
-        )}
-
-        {/* Agent panel — persistent right sidebar across all steps */}
+        {/* Agent panel — persistent right sidebar across all steps (unified chat: Agent SDK) */}
         <div className="sticky top-[4.5rem] self-start" style={{ height: 'calc(100vh - 5rem)' }}>
           <AgentPanel
             session={session}

@@ -180,6 +180,8 @@ export interface ProductSession {
   generatedDescription?: GeneratedDescription;
   descriptionInputSnapshot?: DescriptionInputSnapshot;
   descriptionPrompt?: string;
+  /** History of description versions (max 20, newest at end) — allows cofanie zmian */
+  descriptionVersions?: DescriptionVersion[];
   // AI auto-fill results (persisted so they survive page reload)
   aiFillResults?: AutoFillEntry[];
   // Google Sheets integration
@@ -274,12 +276,17 @@ export interface ChangeClassification {
 
 export type ChatActionType =
   | 'update_title' | 'update_parameter' | 'update_section'
-  | 'regenerate_description' | 'expand_section' | 'request_scrape'
+  | 'regenerate_description' | 'regenerate_title' | 'expand_section' | 'request_scrape'
   | 'reorder_section_images'
   | 'add_image_to_section' | 'remove_image_from_section'
   | 'remove_section' | 'add_section'
   | 'change_section_layout' | 'reorder_sections'
   | 'clear_targets'
+  | 'update_price' | 'update_tax_rate' | 'update_sku' | 'update_ean'
+  | 'update_inventory'
+  | 'reorder_product_images' | 'add_product_image' | 'remove_product_image'
+  | 'change_description_style'
+  | 'ask_user'
 
 export interface ChatAction {
   type: ChatActionType
@@ -290,7 +297,7 @@ export interface ChatAction {
   heading?: string
   bodyHtml?: string
   scrapeUrl?: string
-  /** For reorder_section_images: new ordered list of image URLs */
+  /** For reorder_section_images / reorder_product_images: new ordered list of image URLs */
   imageUrls?: string[]
   /** Single image URL for add/remove image actions */
   imageUrl?: string
@@ -300,6 +307,19 @@ export interface ChatAction {
   sectionIds?: string[]
   /** Insert after this section for add_section */
   afterSectionId?: string
+  /** Price / SKU / EAN / tax / inventory payloads */
+  priceValue?: string
+  currencyValue?: string
+  taxRateValue?: number | string
+  skuValue?: string
+  eanValue?: string
+  inventoryId?: number
+  warehouseId?: string
+  /** Description style change */
+  styleValue?: 'technical' | 'lifestyle' | 'simple'
+  /** ask_user question + options shown as quick chips */
+  question?: string
+  options?: string[]
 }
 
 // ─── Section Targeting ───
@@ -483,32 +503,6 @@ export interface ListingPageResult {
   products: ListingProduct[]
   currentPage: number
   totalPages: number
-}
-
-// ─── AI Chat (Seller Flow) Types ───
-
-export type AIChatActionType =
-  | 'select'
-  | 'deselect'
-  | 'move_to_group'
-  | 'create_group'
-  | 'assign_eans'
-  | 'set_diff_field'
-  | 'message'
-
-export interface AIChatAction {
-  type: AIChatActionType
-  ids?: string[]
-  groupName?: string
-  assignments?: { listingId: string; ean: string }[]
-  field?: string
-  enabled?: boolean
-  text?: string
-}
-
-export interface AIChatMessage {
-  role: 'user' | 'assistant'
-  content: string
 }
 
 // ─── Diff Fields Types ───

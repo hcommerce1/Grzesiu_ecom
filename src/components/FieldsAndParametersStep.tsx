@@ -675,6 +675,8 @@ function FieldsAndParametersStepInner({
   const [paramValues, setParamValues] = useState<Record<string, string | string[]>>(
     initialParameterValues ?? {}
   );
+  const paramValuesRef = useRef<Record<string, string | string[]>>(paramValues);
+  useEffect(() => { paramValuesRef.current = paramValues; }, [paramValues]);
   const lastSyncedParams = useRef(initialParameterValues);
   useEffect(() => {
     if (initialParameterValues !== lastSyncedParams.current) {
@@ -685,6 +687,8 @@ function FieldsAndParametersStepInner({
 
   // Extra field values stored separately
   const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>(initialExtraFieldValues ?? {});
+  const extraFieldValuesRef = useRef<Record<string, string>>(extraFieldValues);
+  useEffect(() => { extraFieldValuesRef.current = extraFieldValues; }, [extraFieldValues]);
   const lastSyncedExtras = useRef(initialExtraFieldValues);
   useEffect(() => {
     if (initialExtraFieldValues !== lastSyncedExtras.current) {
@@ -700,15 +704,19 @@ function FieldsAndParametersStepInner({
     params: true,
   });
 
+  // Ref dla selection żeby side-effecty nie leciały w updaterze setState
+  const selectionRef = useRef<Partial<FieldSelection>>(selection);
+  useEffect(() => { selectionRef.current = selection; }, [selection]);
+
   // Toggle field selection
   const toggleField = useCallback(
     (key: string) => {
-      setSelection((prev) => {
-        const next = { ...prev, [key]: !prev[key as keyof FieldSelection] };
-        onFieldSelectionChange(next);
-        mergePreferences({ [key]: next[key as keyof FieldSelection] } as Partial<FieldSelection>);
-        return next;
-      });
+      const prev = selectionRef.current;
+      const next = { ...prev, [key]: !prev[key as keyof FieldSelection] };
+      selectionRef.current = next;
+      setSelection(next);
+      onFieldSelectionChange(next);
+      mergePreferences({ [key]: next[key as keyof FieldSelection] } as Partial<FieldSelection>);
     },
     [onFieldSelectionChange, mergePreferences]
   );
@@ -716,12 +724,11 @@ function FieldsAndParametersStepInner({
   // Update parameter value
   const updateParamValue = useCallback(
     (id: string, value: string | string[]) => {
-      setParamValues((prev) => {
-        const next = { ...prev, [id]: value };
-        lastSyncedParams.current = next;
-        onParameterValuesChange(next);
-        return next;
-      });
+      const next = { ...paramValuesRef.current, [id]: value };
+      paramValuesRef.current = next;
+      lastSyncedParams.current = next;
+      setParamValues(next);
+      onParameterValuesChange(next);
     },
     [onParameterValuesChange]
   );
@@ -729,12 +736,11 @@ function FieldsAndParametersStepInner({
   // Update extra field value
   const updateExtraFieldValue = useCallback(
     (key: string, value: string) => {
-      setExtraFieldValues((prev) => {
-        const next = { ...prev, [key]: value };
-        lastSyncedExtras.current = next;
-        onExtraFieldValuesChange?.(next);
-        return next;
-      });
+      const next = { ...extraFieldValuesRef.current, [key]: value };
+      extraFieldValuesRef.current = next;
+      lastSyncedExtras.current = next;
+      setExtraFieldValues(next);
+      onExtraFieldValuesChange?.(next);
     },
     [onExtraFieldValuesChange]
   );

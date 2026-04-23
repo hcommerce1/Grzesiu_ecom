@@ -1,9 +1,8 @@
 "use client"
 
 import { useState, useRef, useCallback } from "react"
-import { Store, Trash2, Loader2, CheckCircle2, XCircle, Clock, Send, ChevronLeft } from "lucide-react"
+import { Store, Trash2, Loader2, CheckCircle2, XCircle, Clock, ChevronLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useSellerScraperStore, type SellerScraperStep } from "@/lib/stores/seller-scraper-store"
 import { SellerProductGrid } from "@/components/seller/SellerProductGrid"
@@ -13,98 +12,10 @@ import { DescriptionTemplateStep } from "@/components/seller/DescriptionTemplate
 import { BatchReviewStep } from "@/components/seller/BatchReviewStep"
 import { BaselinkerWorkflowPanel } from "@/components/BaselinkerWorkflowPanel"
 import { detectDiffFields, templatizeDescription, generateTitleTemplate } from "@/lib/batch-session"
-import type { ProductData, AIChatMessage, SellerScrapeSession, ProductSession, GeneratedDescription } from "@/lib/types"
+import type { ProductData, SellerScrapeSession, ProductSession, GeneratedDescription } from "@/lib/types"
 
 interface Props {
   onNavigateToMassListing: () => void
-}
-
-// ─── AI Chat Sidebar ───
-function AIChatSidebar({
-  sessionId,
-  step,
-  listings,
-  groups,
-  messages,
-  onMessages,
-  onActions,
-}: {
-  sessionId: string
-  step: string
-  listings: unknown[]
-  groups: Record<string, string[]>
-  messages: AIChatMessage[]
-  onMessages: (msgs: AIChatMessage[]) => void
-  onActions: (actions: unknown[]) => void
-}) {
-  const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
-
-  const send = async () => {
-    if (!input.trim() || sending) return
-    const userMsg: AIChatMessage = { role: 'user', content: input.trim() }
-    const newMessages = [...messages, userMsg]
-    onMessages(newMessages)
-    setInput('')
-    setSending(true)
-
-    try {
-      const res = await fetch(`/api/seller-scrape/${sessionId}/ai-chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: newMessages,
-          context: { step, listings, groups },
-        }),
-      })
-      const data = await res.json()
-      const assistantMsg: AIChatMessage = { role: 'assistant', content: data.reply ?? '' }
-      onMessages([...newMessages, assistantMsg])
-      if (data.actions?.length > 0) {
-        onActions(data.actions)
-      }
-    } catch {
-      toast.error('Błąd AI chatu')
-    } finally {
-      setSending(false)
-    }
-  }
-
-  return (
-    <div className="flex flex-col h-full border-l border-border">
-      <div className="px-3 py-2 border-b border-border bg-muted/30">
-        <span className="text-sm font-medium">AI Asystent</span>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {messages.length === 0 && (
-          <p className="text-xs text-muted-foreground text-center mt-4">
-            Możesz poprosić o zaznaczenie, grupowanie lub inne akcje.
-          </p>
-        )}
-        {messages.map((msg, i) => (
-          <div key={i} className={cn(
-            "p-2 rounded-lg text-xs",
-            msg.role === 'user' ? "bg-primary/10 text-primary ml-4" : "bg-muted text-foreground mr-4"
-          )}>
-            {msg.content}
-          </div>
-        ))}
-        {sending && <div className="text-xs text-muted-foreground">Myślę...</div>}
-      </div>
-      <div className="p-3 border-t border-border flex gap-2">
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-          placeholder="Napisz polecenie..."
-          className="flex-1 text-sm border border-border rounded px-2 py-1.5 bg-background"
-        />
-        <Button size="icon" className="size-8 shrink-0" onClick={send} disabled={!input.trim() || sending}>
-          <Send className="size-3.5" />
-        </Button>
-      </div>
-    </div>
-  )
 }
 
 // ─── Main Component ───
@@ -268,62 +179,8 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
 
     setIsDeepScraping(false)
 
-    // Auto-suggest groups with AI
-    const deepScraped = store.listings.filter(l => l.deepScraped && l.deepScrapeData)
-    if (deepScraped.length > 0 && store.sessionId) {
-      store.setStep('grouping')
-      await autoSuggestGroups(deepScraped)
-    } else {
-      store.setStep('grouping')
-    }
-  }
-
-  // ─── Auto-suggest groups using AI ───
-  const autoSuggestGroups = async (deepScrapedListings: typeof store.listings) => {
-    if (!store.sessionId) return
-    try {
-      const listingsSummary = deepScrapedListings.slice(0, 50).map(l => ({
-        id: l.id,
-        title: l.title,
-        price: l.price,
-      }))
-      const res = await fetch(`/api/seller-scrape/${store.sessionId}/ai-chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [{
-            role: 'user',
-            content: `Zaproponuj grupy dla tych ${deepScrapedListings.length} produktów. Zwróć move_to_group akcje dla każdego produktu.`,
-          }],
-          context: { step: 'grouping', listings: listingsSummary },
-        }),
-      })
-      const data = await res.json()
-      if (data.actions) applyAIChatActions(data.actions)
-      store.addChatMessage({ role: 'user', content: `[Auto-grupowanie ${deepScrapedListings.length} produktów]` })
-      store.addChatMessage({ role: 'assistant', content: data.reply ?? 'Zaproponowałem grupy.' })
-    } catch { /* ignore */ }
-  }
-
-  // ─── Apply AI chat actions ───
-  const applyAIChatActions = (actions: unknown[]) => {
-    for (const action of actions as Array<{ type: string; ids?: string[]; groupName?: string; field?: string; enabled?: boolean }>) {
-      if (action.type === 'select' && action.ids) {
-        for (const id of action.ids) {
-          store.updateListing(id, { selected: true })
-        }
-      } else if (action.type === 'deselect' && action.ids) {
-        for (const id of action.ids) {
-          store.updateListing(id, { selected: false })
-        }
-      } else if (action.type === 'move_to_group' && action.ids && action.groupName) {
-        store.moveToGroup(action.ids, action.groupName)
-      } else if (action.type === 'create_group' && action.groupName) {
-        store.createGroup(action.groupName)
-      } else if (action.type === 'set_diff_field' && action.field !== undefined) {
-        store.toggleDiffField(action.field)
-      }
-    }
+    // Po deep-scrape przechodzimy do grupowania — grupy tworzy user ręcznie (drag&drop w GroupingView).
+    store.setStep('grouping')
   }
 
   // ─── Group selected to list ───
@@ -502,14 +359,15 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
     )
   }
 
-  const showChat = ['grid', 'deep-scrape', 'grouping', 'diff-fields', 'desc-template', 'review'].includes(store.step)
+  // AIChatSidebar zostal usuniety (wszystkie flow AI idą teraz przez Agent SDK w BaselinkerWorkflowPanel).
+  // Render scraper na pełnej szerokości.
   const groupListingIds = store.activeGroup ? (store.groups[store.activeGroup] ?? []) : []
   const activeGroupListings = store.listings.filter(l => groupListingIds.includes(l.id))
 
   return (
-    <div className={cn("space-y-4", showChat && "grid grid-cols-[1fr_300px] gap-0 space-y-0")}>
+    <div className="space-y-4">
       {/* Main content */}
-      <div className={cn("space-y-4", showChat && "p-0 pr-4")}>
+      <div className="space-y-4">
         {/* Back button */}
         {store.step !== 'input' && (
           <div className="flex items-center gap-3">
@@ -767,22 +625,6 @@ export function SellerScraperTab({ onNavigateToMassListing }: Props) {
         )}
       </div>
 
-      {/* AI Chat Sidebar */}
-      {showChat && store.sessionId && (
-        <AIChatSidebar
-          sessionId={store.sessionId}
-          step={store.step}
-          listings={store.listings.map(l => ({ id: l.id, title: l.title, price: l.price, selected: l.selected, groupName: l.groupName }))}
-          groups={store.groups}
-          messages={store.chatMessages}
-          onMessages={(msgs) => {
-            // Only add the last message (onMessages is called once per new message)
-            const lastMsg = msgs[msgs.length - 1]
-            if (lastMsg) store.addChatMessage(lastMsg)
-          }}
-          onActions={applyAIChatActions}
-        />
-      )}
     </div>
   )
 }

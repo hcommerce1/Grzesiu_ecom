@@ -5,7 +5,7 @@ import { filterAttributesForAI } from './ai-field-filter';
 import { DESCRIPTION_STYLES, type DescriptionStyleId } from './description-styles';
 import type { AnthropicUsage } from './image-analyzer';
 
-const CLAUDE_MODEL = 'claude-opus-4-6';
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
 export interface GenerateDescriptionOptions {
   session: ProductSession;

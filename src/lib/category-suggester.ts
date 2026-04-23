@@ -10,6 +10,23 @@ export interface CategorySuggestion {
   commission: string | null;
 }
 
+function buildFallbackTerms(productTitle: string, attributes: Record<string, string>): string[] {
+  const terms: string[] = [];
+  const title = productTitle.trim();
+  if (title) {
+    terms.push(title);
+    const words = title.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) terms.push(words.slice(0, 2).join(' '));
+    if (words.length >= 1) terms.push(words[0]);
+  }
+  const typeKeys = ['typ', 'Typ', 'rodzaj', 'Rodzaj', 'kategoria', 'Kategoria', 'Typ produktu', 'Rodzaj produktu'];
+  for (const k of typeKeys) {
+    const v = attributes[k];
+    if (v && typeof v === 'string' && v.trim()) terms.push(v.trim());
+  }
+  return Array.from(new Set(terms.filter(Boolean)));
+}
+
 export async function suggestCategory(
   productTitle: string,
   attributes: Record<string, string>,
@@ -51,14 +68,21 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 
   const content = (llmRes.content[0] as { type: 'text'; text: string }).text ?? '{}';
   let searches: string[] = [];
+  let parseOk = true;
   try {
     const parsed = JSON.parse(content);
-    searches = Array.isArray(parsed.searches) ? parsed.searches : [];
+    searches = Array.isArray(parsed.searches) ? parsed.searches.filter((s: unknown): s is string => typeof s === 'string' && s.trim().length > 0) : [];
   } catch {
-    searches = [productTitle.split(' ').slice(0, 3).join(' ')];
+    parseOk = false;
   }
 
-  const terms = searches.slice(0, 8);
+  if (!parseOk || searches.length === 0) {
+    console.log('[suggestCategory] LLM parse failed or empty; falling back from title/attrs. Raw:', content.slice(0, 200));
+    searches = buildFallbackTerms(productTitle, attributes);
+  }
+
+  const terms = searches.slice(0, 8).filter(t => t && t.trim().length > 0);
+  console.log('[suggestCategory] search terms:', terms);
   onProgress?.(`Przeszukuję ${terms.length} kategorii Allegro...`);
 
   const seenIds = new Set<string>();
@@ -67,18 +91,46 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
   for (const term of terms) {
     try {
       const results = await searchCategories(term, 10);
+      console.log(`[suggestCategory] term "${term}" → ${results.length} hits (leafs: ${results.filter(r => r.leaf).length})`);
       for (const cat of results) {
         if (cat.leaf && !seenIds.has(cat.id)) {
           seenIds.add(cat.id);
           allResults.push(cat);
         }
       }
-    } catch {
-      // skip failed searches
+    } catch (err) {
+      console.log(`[suggestCategory] term "${term}" threw:`, err instanceof Error ? err.message : err);
     }
   }
 
+  // Relaxed fallback: jeśli strict match nie dał nic, odpuść wymóg leaf i weź top N
+  if (allResults.length === 0 && terms.length > 0) {
+    console.log('[suggestCategory] strict match returned 0 leafs — relaxing leaf filter');
+    for (const term of terms) {
+      try {
+        const results = await searchCategories(term, 20);
+        for (const cat of results) {
+          if (!seenIds.has(cat.id)) {
+            seenIds.add(cat.id);
+            allResults.push(cat);
+          }
+        }
+      } catch {}
+      if (allResults.length >= 5) break;
+    }
+  }
+
+  // Ostatnia deska: spróbuj samego tytułu (pełnego) — single-word search bywa mocniejszy
+  if (allResults.length === 0 && productTitle.trim()) {
+    console.log('[suggestCategory] still 0 hits — trying full title as single term');
+    try {
+      const results = await searchCategories(productTitle.trim(), 10);
+      for (const cat of results) if (!seenIds.has(cat.id)) { seenIds.add(cat.id); allResults.push(cat); }
+    } catch {}
+  }
+
   const topResults = allResults.slice(0, 10);
+  console.log(`[suggestCategory] final candidates: ${topResults.length}`);
   const COMMISSION_BATCH = 5;
 
   onProgress?.(`Pobieram prowizje dla top ${Math.min(COMMISSION_BATCH, topResults.length)}...`);

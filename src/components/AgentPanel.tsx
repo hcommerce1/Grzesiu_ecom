@@ -53,7 +53,10 @@ export function AgentPanel({
   const [isStreaming, setIsStreaming] = useState(false)
   const [started, setStarted] = useState(false)
   const [totalCost, setTotalCost] = useState<{ pln: number; tokens: number } | null>(null)
-  const [categorySuggestions, setCategorySuggestions] = useState<CategorySuggestion[] | null>(null)
+  const [categoryGate, setCategoryGate] = useState<{ suggestions: CategorySuggestion[]; awaiting: boolean } | null>(null)
+  const [manualCategoryQuery, setManualCategoryQuery] = useState("")
+  const [manualCategoryResults, setManualCategoryResults] = useState<CategorySuggestion[] | null>(null)
+  const [manualCategoryLoading, setManualCategoryLoading] = useState(false)
   const [sessionKey] = useState(() => crypto.randomUUID())
 
   const conversationHistory = useRef<Message[]>([])
@@ -90,7 +93,9 @@ export function AgentPanel({
 
       if (mode === "start") {
         setSteps([])
-        setCategorySuggestions(null)
+        setCategoryGate(null)
+        setManualCategoryQuery("")
+        setManualCategoryResults(null)
       }
 
       setIsStreaming(true)
@@ -170,7 +175,12 @@ export function AgentPanel({
                 break
 
               case "category_suggestions_ready":
-                setCategorySuggestions(event.suggestions as CategorySuggestion[])
+                setCategoryGate({
+                  suggestions: (event.suggestions as CategorySuggestion[]) ?? [],
+                  awaiting: (event.awaiting as boolean | undefined) ?? true,
+                })
+                setManualCategoryResults(null)
+                setManualCategoryQuery("")
                 break
 
               case "message_delta": {
@@ -268,8 +278,29 @@ export function AgentPanel({
       allegroCategory: { id: c.id, name: c.name, path: c.path, leaf: true },
     }
     onSessionPatch({ allegroCategory: patched.allegroCategory })
-    setCategorySuggestions(null)
+    setCategoryGate(null)
+    setManualCategoryResults(null)
+    setManualCategoryQuery("")
     sendMessage(`Kategoria potwierdzona: ${c.name} (${c.id}). Kontynuuj workflow.`, "chat", patched)
+  }
+
+  async function handleManualCategorySearch() {
+    const q = manualCategoryQuery.trim()
+    if (!q) return
+    setManualCategoryLoading(true)
+    try {
+      const res = await fetch(`/api/allegro/categories/search?q=${encodeURIComponent(q)}&withCommission=true`)
+      const data = await res.json()
+      const results = ((data.results ?? []) as Array<{ id: string; name: string; fullPath: string; leaf: boolean; commission?: string | null }>)
+        .filter(r => r.leaf)
+        .slice(0, 10)
+        .map(r => ({ id: r.id, name: r.name, path: r.fullPath, commission: r.commission ?? null }))
+      setManualCategoryResults(results)
+    } catch {
+      setManualCategoryResults([])
+    } finally {
+      setManualCategoryLoading(false)
+    }
   }
 
   const hasData = !!session?.data?.title
@@ -317,33 +348,93 @@ export function AgentPanel({
         </div>
       )}
 
-      {/* Category picker */}
-      {categorySuggestions && categorySuggestions.length > 0 && (
-        <div className="px-3 py-3 border-b bg-amber-50 shrink-0">
-          <p className="text-xs font-semibold text-amber-900 mb-2">
-            Wybierz kategorię Allegro (top {categorySuggestions.length}):
-          </p>
-          <div className="space-y-1.5">
-            {categorySuggestions.map(c => (
-              <button
-                key={c.id}
-                onClick={() => handlePickCategory(c)}
-                className="w-full text-left bg-white border border-amber-200 hover:border-amber-400 hover:bg-amber-50 rounded-md px-2.5 py-1.5 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-slate-800 truncate">{c.name}</p>
-                    <p className="text-[10px] text-slate-500 truncate">{c.path}</p>
-                  </div>
-                  {c.commission && (
-                    <span className="text-[10px] text-amber-700 font-semibold shrink-0 whitespace-nowrap">
-                      {c.commission}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
+      {/* Category picker — widoczny zawsze gdy gate aktywny, nawet przy 0 sugestii */}
+      {categoryGate?.awaiting && (
+        <div className="px-3 py-3 border-b bg-amber-50 shrink-0 max-h-[50vh] overflow-y-auto">
+          {categoryGate.suggestions.length > 0 ? (
+            <>
+              <p className="text-xs font-semibold text-amber-900 mb-2">
+                Wybierz kategorię Allegro (top {categoryGate.suggestions.length}):
+              </p>
+              <div className="space-y-1.5 mb-3">
+                {categoryGate.suggestions.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => handlePickCategory(c)}
+                    className="w-full text-left bg-white border border-amber-200 hover:border-amber-400 hover:bg-amber-50 rounded-md px-2.5 py-1.5 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-slate-800 truncate">{c.name}</p>
+                        <p className="text-[10px] text-slate-500 truncate">{c.path}</p>
+                      </div>
+                      {c.commission && (
+                        <span className="text-[10px] text-amber-700 font-semibold shrink-0 whitespace-nowrap">
+                          {c.commission}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-amber-900 mb-2">
+              Brak auto-sugestii — wyszukaj kategorię ręcznie (fragment nazwy).
+            </p>
+          )}
+
+          {/* Manualny search */}
+          <div className="flex gap-1.5">
+            <input
+              type="text"
+              value={manualCategoryQuery}
+              onChange={e => setManualCategoryQuery(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  handleManualCategorySearch()
+                }
+              }}
+              placeholder="np. odkurzacze pionowe"
+              className="flex-1 text-xs px-2 py-1.5 bg-white border border-amber-200 rounded-md focus:outline-none focus:border-amber-400"
+            />
+            <button
+              onClick={handleManualCategorySearch}
+              disabled={manualCategoryLoading || !manualCategoryQuery.trim()}
+              className="text-xs px-2.5 py-1.5 bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50"
+            >
+              {manualCategoryLoading ? "..." : "Szukaj"}
+            </button>
           </div>
+
+          {manualCategoryResults && (
+            <div className="mt-2 space-y-1.5">
+              {manualCategoryResults.length === 0 ? (
+                <p className="text-[10px] text-slate-500">Brak wyników dla &quot;{manualCategoryQuery}&quot;.</p>
+              ) : (
+                manualCategoryResults.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => handlePickCategory(c)}
+                    className="w-full text-left bg-white border border-amber-200 hover:border-amber-400 hover:bg-amber-50 rounded-md px-2.5 py-1.5 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-slate-800 truncate">{c.name}</p>
+                        <p className="text-[10px] text-slate-500 truncate">{c.path}</p>
+                      </div>
+                      {c.commission && (
+                        <span className="text-[10px] text-amber-700 font-semibold shrink-0 whitespace-nowrap">
+                          {c.commission}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
         </div>
       )}
 

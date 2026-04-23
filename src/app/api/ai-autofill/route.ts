@@ -3,7 +3,7 @@ import { buildAutoFillPrompt, validateAutoFillResponse } from '@/lib/ai-autofill
 import type { AllegroParameter, ProductData } from '@/lib/types';
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-opus-4-6';
+const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-haiku-4-5-20251001';
 
 interface AutoFillRequest {
   productData: ProductData;

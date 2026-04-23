@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const VISION_MODEL = 'claude-opus-4-6';
+const VISION_MODEL = 'claude-sonnet-4-6';
 
 interface ImageAnalysisResult {
   url: string;
