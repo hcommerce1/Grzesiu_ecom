@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest } from 'next/server';
 import type { ProductSession, AllegroParameter, ImageMeta, DescriptionSection, ChatAction } from '@/lib/types';
-import { analyzeImages } from '@/lib/image-analyzer';
+import { analyzeImages, type ProductContext } from '@/lib/image-analyzer';
 import { suggestCategory } from '@/lib/category-suggester';
 import { fetchCategoryParameters } from '@/lib/allegro-params';
 import { buildAutoFillPrompt, validateAutoFillResponse } from '@/lib/ai-autofill';
@@ -48,6 +48,20 @@ function addUsage(state: AgentState, model: string, usage: AnthropicUsage): void
     cache_read_input_tokens: 0,
   };
   state.usageByModel[model] = sumUsage([existing, usage]);
+}
+
+const KEY_ATTRIBUTE_NAMES = ['Marka', 'Materiał', 'Kolor', 'Typ', 'Model', 'Rodzaj'];
+
+function pickKeyAttributes(attrs: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!attrs) return undefined;
+  const picked: Record<string, string> = {};
+  for (const [k, v] of Object.entries(attrs)) {
+    if (!v || !String(v).trim()) continue;
+    if (KEY_ATTRIBUTE_NAMES.some(name => k.toLowerCase().includes(name.toLowerCase()))) {
+      picked[k] = String(v);
+    }
+  }
+  return Object.keys(picked).length ? picked : undefined;
 }
 
 // ─── Tool definitions ───
@@ -605,7 +619,12 @@ async function executeTool(
       const urls = (input.imageUrls as string[]) ?? state.session.data?.images ?? [];
       if (!urls.length) return JSON.stringify({ error: 'Brak URL-i zdjęć' });
 
-      const { results, usage } = await analyzeImages(urls, apiKey);
+      const context: ProductContext = {
+        title: state.session.data?.title,
+        categoryPath: state.session.allegroCategory?.path,
+        keyAttributes: pickKeyAttributes(state.session.data?.attributes),
+      };
+      const { results, usage } = await analyzeImages(urls, apiKey, context);
 
       state.imagesMeta = results.map((r, i) => ({
         url: r.url,
@@ -738,10 +757,15 @@ async function executeTool(
       state.session = { ...state.session, filledParameters: state.filledParameters };
       sseWrite({ type: 'session_patch', patch: { filledParameters: state.filledParameters } });
 
+      const totalFilled = Object.keys(state.filledParameters).length;
+      const stillMissingRequired = state.allegroParams
+        .filter(p => p.required && !state.filledParameters[p.id]);
       return JSON.stringify({
-        filled: Object.keys(result.filled).length,
-        unfilled: result.unfilled.length,
-        unfilledNames: result.unfilled.slice(0, 5).map(id => state.allegroParams.find(p => p.id === id)?.name ?? id),
+        newlyFilled: Object.keys(result.filled).length,
+        totalFilled,
+        totalParams: state.allegroParams.length,
+        missingRequired: stillMissingRequired.length,
+        missingRequiredNames: stillMissingRequired.slice(0, 5).map(p => p.name),
       });
     }
 

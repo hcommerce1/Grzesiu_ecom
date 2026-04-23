@@ -47,7 +47,8 @@ export async function generateDescription(
     .map(([k, v]) => {
       const def = paramDefs.find(p => p.id === k);
       const name = def?.name || k;
-      const opts2 = def?.options ?? def?.restrictions?.allowedValues ?? def?.dictionary ?? [];
+      const rawOpts = def?.dictionary ?? (Array.isArray(def?.options) ? def.options : null) ?? def?.restrictions?.allowedValues ?? [];
+      const opts2 = Array.isArray(rawOpts) ? rawOpts : [];
       const translateVal = (val: string) => opts2.find(o => o.id === val)?.value ?? val;
       const translatedVal = Array.isArray(v) ? v.map(translateVal).join(', ') : translateVal(v);
       return `- ${name}: ${translatedVal}`;
