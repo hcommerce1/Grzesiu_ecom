@@ -144,7 +144,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
 
   // fieldSelection wymuszone — opis/zdjęcia/parametry zawsze TAK, bundle zawsze NIE.
   // User usunął te checkboxy z UI bo i tak zawsze są wysyłane.
-  const fieldSelection: FieldSelection = {
+  const fieldSelection: Partial<FieldSelection> = {
     ...(session.fieldSelection ?? {}),
     description: true,
     images: true,

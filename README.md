@@ -1,5 +1,15 @@
 # E-Commerce Scraper
 
+> ⚠️ **README jest legacy** — opisuje wczesną fazę projektu (tylko scraper + tłumaczenie OpenAI).
+> **Aktualny stan aplikacji:** scraper + AI listing tool z integracją BaseLinker, Allegro,
+> Google Sheets, Mass listing, Agent SDK, AI image generation.
+>
+> **Aktualna dokumentacja:** [CLAUDE.md](CLAUDE.md) (przegląd) · [SETUP.md](SETUP.md) (instalacja) · [ENV.md](ENV.md) (zmienne środowiskowe) · [DEPENDENCIES.md](DEPENDENCIES.md) (pakiety npm)
+>
+> Pełen rewrite README zaplanowany.
+
+---
+
 Aplikacja webowa (Next.js 16 + React 19) do pobierania danych produktowych ze sklepów internetowych i automatycznego tłumaczenia ich na język polski przy pomocy modelu językowego (LLM). Wklejasz listę adresów URL produktów, a aplikacja zwraca tytuł, opis, atrybuty, cenę oraz zdjęcia — już przetłumaczone i gotowe do wykorzystania np. przy wystawianiu ofert.
 
 ## Co potrafi aplikacja

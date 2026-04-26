@@ -18,15 +18,14 @@ Dla listy zmiennych środowiskowych zobacz [ENV.md](ENV.md).
 
 ### Windows — dodatkowo (dla natywnego modułu `better-sqlite3`)
 
-Pakiet `better-sqlite3` kompiluje się przy instalacji. Jeśli `npm install` wypluje błąd `node-gyp` / `MSBuild`, zainstaluj:
+Zwykle `npm install` na Win11 + Node 22 zadziała bez kompilacji (prebuilt binary). Ale jeśli wypluje błąd `node-gyp` / `MSBuild`, zainstaluj ręcznie:
 
-```powershell
-npm install --global --production windows-build-tools
-```
+1. **Visual Studio Build Tools 2022** — [download](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)
+   - Po instalacji wybierz workload **„Desktop development with C++”**
+2. **Python 3.11+** — [python.org](https://www.python.org/downloads/) — zaznacz **„Add to PATH”**
+3. Restart terminala i ponowne `npm install`
 
-lub ręcznie: **Visual Studio Build Tools** z workloadem „Desktop development with C++” + **Python 3.x**.
-
-W praktyce na nowoczesnym Windows 11 z Node 22 prebuilt binary zwykle załatwia sprawę i kompilacja nie jest potrzebna.
+> Stara metoda `npm install -g windows-build-tools` jest **deprecated** — paczka usunięta z npm w 2021. Nie używaj.
 
 ---
 
@@ -80,7 +79,7 @@ Pełna lista i opis zmiennych: [ENV.md](ENV.md).
 
 **Minimalne wymagane do działania podstawowego scrape'u + tłumaczenia**:
 
-- `OPENAI_API_KEY` — klucz OpenAI
+- `ANTHROPIC_API_KEY` — klucz Anthropic (Claude)
 - `APP_USER=hubert` (lub `grzesiek`)
 
 Reszta (BaseLinker, Allegro, Decodo, FAL, Apify, Google Sheets, R2, Cloudinary) jest opcjonalna — tylko jeśli używasz danej funkcji.
@@ -96,6 +95,29 @@ google-credentials.json
 ```
 
 Ścieżkę można nadpisać zmienną `GOOGLE_SHEETS_CREDENTIALS_PATH`. Plik jest w `.gitignore` — nigdy nie commituj.
+
+### Jak zdobyć `google-credentials.json` (od zera)
+
+1. Wejdź na [Google Cloud Console](https://console.cloud.google.com)
+2. Utwórz nowy projekt (ikonka u góry → **New Project**) lub wybierz istniejący
+3. **APIs & Services → Library** → wyszukaj "Google Sheets API" → **Enable**
+4. **IAM & Admin → Service Accounts → Create Service Account**:
+   - Name: dowolna (np. `grzesiu-ecom-reader`)
+   - Role: nie wymagana (Sheets API + udostępniony arkusz wystarczą)
+5. Po utworzeniu: kliknij na konto → **Keys → Add Key → Create New Key → JSON** → pobierz plik
+6. Przemianuj pobrany plik na `google-credentials.json` i umieść w katalogu głównym projektu
+7. **Udostępnij arkusz Google Sheets** kontu service:
+   - Otwórz arkusz w przeglądarce → **Share**
+   - Wklej email z pola `client_email` z pliku JSON
+   - Uprawnienia: **Viewer** (read-only)
+   - **Send** (bez powiadomienia OK)
+
+ID arkusza i GID zakładki ustaw w `.env.local`:
+
+```env
+GOOGLE_SHEETS_SPREADSHEET_ID=1AbCdEf...   # z URL: docs.google.com/spreadsheets/d/{ID}/edit
+GOOGLE_SHEETS_SHEET_GID=0                 # z URL #gid={GID}
+```
 
 ---
 
@@ -139,7 +161,7 @@ npm start
 - [ ] `npm --version` → ≥ 10
 - [ ] `npm install` przeszło bez błędów
 - [ ] `npx playwright install chromium` przeszło
-- [ ] `.env.local` istnieje i ma `OPENAI_API_KEY`
+- [ ] `.env.local` istnieje i ma `ANTHROPIC_API_KEY`
 - [ ] `npm run dev` startuje bez błędów
 - [ ] http://localhost:3000 otwiera się w przeglądarce
 - [ ] Wklejenie testowego URL-a z sekcji README zwraca wynik
@@ -155,5 +177,5 @@ npm start
 | Playwright: „Executable doesn't exist” | `npx playwright install chromium` |
 | Port 3000 zajęty | `set PORT=3001 && npm run dev` (Windows) lub `PORT=3001 npm run dev` |
 | OOM / dev server crash na Windows | skrypt `dev` już ustawia `--max-old-space-size=4096`; jeśli mało — zwiększ do `8192` |
-| Brak tłumaczeń | sprawdź `OPENAI_API_KEY` i `LLM_MODEL` w `.env.local` |
+| Brak tłumaczeń / generowania AI | sprawdź `ANTHROPIC_API_KEY` w `.env.local` |
 | „Access denied” / CAPTCHA | przełącz `SCRAPER_MODE=unblocker` lub `decodo` i uzupełnij odpowiednie klucze |
