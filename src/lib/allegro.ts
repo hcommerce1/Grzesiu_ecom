@@ -341,7 +341,7 @@ export async function buildCategoryTree(): Promise<FlatCategory[]> {
 
   // BFS queue: [category, parentPath]
   type QueueItem = { id: string; name: string; leaf: boolean; parentId: string; pathSoFar: string };
-  let queue: QueueItem[] = rootCats.map(c => ({
+  const queue: QueueItem[] = rootCats.map(c => ({
     id: c.id,
     name: c.name,
     leaf: c.leaf,
@@ -361,7 +361,7 @@ export async function buildCategoryTree(): Promise<FlatCategory[]> {
 
   // Process non-leaf categories in batches
   const BATCH_SIZE = 5;
-  let toExpand = queue.filter(q => !q.leaf);
+  const toExpand = queue.filter(q => !q.leaf);
 
   while (toExpand.length > 0) {
     const batch = toExpand.splice(0, BATCH_SIZE);
@@ -493,7 +493,7 @@ function normalizePolish(str: string): string {
 
 /** Basic Polish stemming — strips common suffixes for fuzzy matching */
 function stemPolish(word: string): string {
-  let w = normalizePolish(word.toLowerCase());
+  const w = normalizePolish(word.toLowerCase());
   // Common Polish noun/adjective endings (longest first)
   const suffixes = [
     'owego', 'owej', 'owym', 'owych', 'owym',

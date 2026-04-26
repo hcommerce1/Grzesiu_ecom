@@ -419,7 +419,7 @@ export function EditProductsTab() {
     }
 
     loadProduct()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [currentBatchId, inventoryId])
 
   const handleAdvanceBatch = useCallback(async () => {

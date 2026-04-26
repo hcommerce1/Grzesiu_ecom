@@ -7,6 +7,8 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
+  ChevronsUpDown,
   AlertCircle,
   CheckCircle2,
   Clock,
@@ -47,10 +49,50 @@ function Thumbnail({ src }: { src: string | null }) {
     <img
       src={src}
       alt=""
-      className="size-8 object-cover rounded border border-border"
+      className="size-12 object-cover rounded-md border border-border bg-white"
       loading="lazy"
       onError={() => setErrored(true)}
     />
+  );
+}
+
+type SheetSortField = "id" | "sku" | "nazwa" | "ean" | "stan_techniczny";
+
+function SortableHeader({
+  field,
+  label,
+  align = "left",
+  sortField,
+  sortDirection,
+  onSort,
+}: {
+  field: SheetSortField;
+  label: string;
+  align?: "left" | "center";
+  sortField: SheetSortField | null;
+  sortDirection: "asc" | "desc";
+  onSort: (f: SheetSortField) => void;
+}) {
+  const isActive = sortField === field;
+  const Icon = !isActive ? ChevronsUpDown : sortDirection === "asc" ? ChevronUp : ChevronDown;
+  return (
+    <th
+      className={cn(
+        "px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider",
+        align === "center" ? "text-center" : "text-left",
+      )}
+    >
+      <button
+        onClick={() => onSort(field)}
+        className={cn(
+          "inline-flex items-center gap-1 hover:text-foreground transition-colors",
+          isActive && "text-foreground",
+        )}
+      >
+        {label}
+        <Icon className={cn("size-3.5", isActive ? "opacity-100" : "opacity-40")} />
+      </button>
+    </th>
   );
 }
 
@@ -146,6 +188,20 @@ export function GoogleSheetsTab() {
   // Status filter
   type StatusFilter = "all" | "ready" | "no_url" | "error" | "in_progress";
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  // Sort state — sortowanie po klik na nagłówek (ID, SKU, nazwa, stan, EAN)
+  type SortField = "id" | "sku" | "nazwa" | "ean" | "stan_techniczny";
+  const [sortField, setSortField] = useState<SortField | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+    setActivePage(1);
+  };
 
   // Missing URL dialog
   const [missingUrlProducts, setMissingUrlProducts] = useState<SheetProductRow[]>([]);
@@ -633,9 +689,19 @@ export function GoogleSheetsTab() {
     }
   });
 
-  const activeTotalPages = Math.max(1, Math.ceil(filteredActive.length / activePerPage));
+  // Sort gdy sortField jest aktywny (numeric collation dla ID/Stan; locale-aware dla tekstu)
+  const sortedActive = sortField
+    ? [...filteredActive].sort((a, b) => {
+        const av = a[sortField] ?? "";
+        const bv = b[sortField] ?? "";
+        const cmp = String(av).localeCompare(String(bv), "pl", { numeric: true, sensitivity: "base" });
+        return sortDirection === "asc" ? cmp : -cmp;
+      })
+    : filteredActive;
+
+  const activeTotalPages = Math.max(1, Math.ceil(sortedActive.length / activePerPage));
   const safeActivePage = Math.min(activePage, activeTotalPages);
-  const paginatedActive = filteredActive.slice(
+  const paginatedActive = sortedActive.slice(
     (safeActivePage - 1) * activePerPage,
     safeActivePage * activePerPage
   );
@@ -877,21 +943,11 @@ export function GoogleSheetsTab() {
                   <th className="w-12 px-2 py-2.5 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Foto
                   </th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    ID
-                  </th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    SKU
-                  </th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Nazwa
-                  </th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    EAN
-                  </th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Stan
-                  </th>
+                  <SortableHeader field="id" label="ID" align="left" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader field="sku" label="SKU" align="left" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader field="nazwa" label="Nazwa" align="left" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader field="ean" label="EAN" align="left" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader field="stan_techniczny" label="Stan" align="left" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
                   <th className="px-3 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider min-w-[280px]">
                     URL producenta
                   </th>

@@ -1359,6 +1359,10 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                   imagesMeta={imagesMeta}
                   parameters={localParameters}
                   parameterDefs={session?.allegroParameters ?? []}
+                  ean={editableFieldValues['ean'] || productData?.ean}
+                  sku={editableFieldValues['sku'] || productData?.sku}
+                  categoryPath={session?.allegroCategory?.path}
+                  price={editableFieldValues['prices'] ? parseFloat(editableFieldValues['prices'].replace(',', '.')) : undefined}
                 />
               </>
             ) : isGeneratingDesc ? (

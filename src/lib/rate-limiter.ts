@@ -204,7 +204,7 @@ function findBlockedToken(
 export async function acquireSlot(token: string, priority: Priority = 'normal'): Promise<void> {
   const tokenHash = hashToken(token);
 
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const state = getFullState();
 
