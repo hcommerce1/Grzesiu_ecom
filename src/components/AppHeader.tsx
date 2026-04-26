@@ -1,6 +1,7 @@
 "use client"
 
 import { Package2 } from "lucide-react"
+import { GlobalTokenCostBadge } from "./GlobalTokenCostBadge"
 
 export function AppHeader() {
   return (
@@ -10,6 +11,7 @@ export function AppHeader() {
         <span className="font-semibold text-sm">Menedżer ofert</span>
         <span className="hidden sm:inline text-xs text-muted-foreground">Allegro / BaseLinker</span>
       </div>
+      <GlobalTokenCostBadge />
     </header>
   )
 }

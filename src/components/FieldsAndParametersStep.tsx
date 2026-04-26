@@ -15,12 +15,10 @@ import type { FieldSelection, ProductMode, BLExtraField, AllegroParameter, Param
 
 /* ─── Constants ─── */
 
-const MANDATORY_FIELDS = ['inventory_id', 'tax_rate', 'name'];
+const MANDATORY_FIELDS = ['tax_rate'];
 
 const MANDATORY_LABELS: Record<string, string> = {
-  inventory_id: 'Inventory ID',
   tax_rate: 'Stawka VAT',
-  name: 'Nazwa (name)',
 };
 
 const TAX_RATE_OPTIONS = [
@@ -36,10 +34,6 @@ const OPTIONAL_FIELDS: { key: string; label: string }[] = [
   { key: 'sku', label: 'SKU' },
   { key: 'ean', label: 'EAN' },
   { key: 'asin', label: 'ASIN' },
-  { key: 'description', label: 'Opis (description)' },
-  { key: 'images', label: 'Zdjęcia (images)' },
-  { key: 'description_extra1', label: 'Opis extra1' },
-  { key: 'features', label: 'Parametry Allegro (features)' },
   { key: 'weight', label: 'Waga' },
   { key: 'dimensions', label: 'Wymiary (H/W/L)' },
   { key: 'stock', label: 'Stan magazynowy' },
@@ -48,7 +42,6 @@ const OPTIONAL_FIELDS: { key: string; label: string }[] = [
   { key: 'manufacturer_id', label: 'Producent' },
   { key: 'category_id', label: 'Kategoria' },
   { key: 'average_cost', label: 'Średni koszt' },
-  { key: 'tags', label: 'Tagi' },
 ];
 
 const MODE_EXTRA_FIELDS: Record<string, { key: string; label: string; mode: ProductMode }> = {
@@ -822,55 +815,7 @@ function FieldsAndParametersStepInner({
             </FieldRow>
           ))}
 
-          {/* is_bundle toggle */}
-          <div className="grid grid-cols-[2rem_1fr_minmax(12rem,20rem)] items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-muted/40">
-            <div className="flex items-center justify-center pt-0.5">
-              <Checkbox checked={true} disabled />
-            </div>
-            <div className="min-w-0 pt-0.5">
-              <span className="text-sm text-foreground">Bundle (zestaw)</span>
-              <span className="text-xs text-muted-foreground block">
-                {isBundle ? 'Tak — produkt jest zestawem' : 'Nie — produkt podstawowy'}
-              </span>
-            </div>
-            {isEditMode ? (
-              <div className="px-3 py-2 rounded-lg bg-muted/40 text-sm text-muted-foreground">
-                {isBundle ? '✓ Zestaw (niezmieniane)' : '✓ Produkt podstawowy (niezmieniane)'}
-              </div>
-            ) : (
-              <div className="flex gap-1">
-                {[
-                  { v: false, label: 'Nie' },
-                  { v: true, label: 'Tak' },
-                ].map(({ v, label }) => (
-                  <button
-                    key={String(v)}
-                    type="button"
-                    onClick={() => onIsBundleChange(v)}
-                    className={cn(
-                      'flex-1 h-9 rounded-lg border text-sm font-medium transition-colors',
-                      isBundle === v
-                        ? 'border-primary bg-accent text-accent-foreground'
-                        : 'border-input hover:bg-muted'
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Bundle products picker */}
-          {isBundle && (
-            <div className="mx-3 mt-1 mb-2">
-              <BundleProductsPicker
-                inventoryId={inventoryId}
-                bundleProducts={bundleProducts}
-                onChange={onBundleProductsChange}
-              />
-            </div>
-          )}
+          {/* Bundle toggle + Bundle products picker — usunięte wg decyzji usera (zawsze false). */}
 
           {/* Mode-specific mandatory */}
           {modeExtraField && modeExtraField.key !== 'bundle_products' && (

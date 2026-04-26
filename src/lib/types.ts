@@ -13,6 +13,12 @@ export interface ProductData {
   bundleProducts?: Record<string, number>;
   taxRate?: number;
   bundleContextText?: string;
+  /**
+   * Pre-fill editableFieldValues z BL gdy edytujemy istniejący produkt.
+   * Klucze: 'prices', 'stock', 'manufacturer_id', 'weight', 'height', 'width', 'length', 'sku', 'ean'.
+   * Wartości jako string (zgodnie z istniejącym typem editableFieldValues).
+   */
+  editPrefill?: Record<string, string>;
 }
 
 export interface ScrapeResult {
@@ -378,12 +384,13 @@ export interface BLProductListItem {
 
 export type ImageGenIntent = 'background_removal' | 'simple_edit' | 'generation' | 'context_edit';
 export type ImageGenProvider = 'removebg' | 'replicate' | 'nanobananapro' | 'fluxcontextpro';
-export type ImageGenPreference = 'nanobananapro' | 'fluxcontextpro';
+export type ImageGenMode = 'generate' | 'edit';
 
 export interface PromptClassification {
   intent: ImageGenIntent;
+  mode: ImageGenMode;
   recommendedProvider: ImageGenProvider;
-  translatedPrompt: string;
+  enrichedPrompt: string;
   originalPrompt: string;
   confidence: number;
   suggestion?: string;
@@ -395,7 +402,7 @@ export interface ImageGenRequest {
   prompt: string;
   sourceImageUrl?: string;
   provider?: ImageGenProvider;
-  preference?: ImageGenPreference;
+  mode?: ImageGenMode;
 }
 
 export interface ImageGenResult {
@@ -404,6 +411,7 @@ export interface ImageGenResult {
   provider: ImageGenProvider;
   error?: string;
   costEstimate?: string;
+  costUsd?: number;
 }
 
 // ─── Batch Jobs Types ───

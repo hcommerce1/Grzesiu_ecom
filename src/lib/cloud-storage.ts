@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
 
@@ -161,4 +161,79 @@ export async function uploadImage(
   throw new Error(
     'Żaden provider chmurowy nie jest skonfigurowany. Ustaw zmienne R2_* lub CLOUDINARY_* w .env.local',
   );
+}
+
+// ─── Health probes ───
+
+const PROBE_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('probe timeout')), ms)),
+  ]);
+}
+
+async function probeR2(): Promise<boolean> {
+  if (!isConfigured('r2')) return false;
+  try {
+    const s3 = getS3();
+    const key = `_healthcheck/probe-${Date.now()}`;
+    await withTimeout(
+      s3.send(new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME!,
+        Key: key,
+        Body: Buffer.from('ok'),
+        ContentType: 'text/plain',
+      })),
+      PROBE_TIMEOUT_MS,
+    );
+    // Sprzątanie — best effort, nie blokujemy gdy się nie uda
+    s3.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: key })).catch(() => {});
+    return true;
+  } catch (err) {
+    console.warn('[cloud-storage] R2 probe failed:', err);
+    return false;
+  }
+}
+
+async function probeCloudinary(): Promise<boolean> {
+  if (!isConfigured('cloudinary')) return false;
+  try {
+    ensureCloudinary();
+    const publicId = `_healthcheck/probe-${Date.now()}`;
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        cloudinary.uploader.upload(
+          'data:text/plain;base64,b2s=', // "ok"
+          { public_id: publicId, resource_type: 'raw' },
+          (err) => (err ? reject(err) : resolve()),
+        );
+      }),
+      PROBE_TIMEOUT_MS,
+    );
+    cloudinary.uploader.destroy(publicId, { resource_type: 'raw' }).catch(() => {});
+    return true;
+  } catch (err) {
+    console.warn('[cloud-storage] Cloudinary probe failed:', err);
+    return false;
+  }
+}
+
+interface HealthSnapshot {
+  r2: boolean;
+  cloudinary: boolean;
+  checkedAt: number;
+}
+
+const HEALTH_CACHE_TTL_MS = 5 * 60 * 1000;
+let healthCache: HealthSnapshot | null = null;
+
+export async function getStorageHealth(forceRefresh = false): Promise<HealthSnapshot> {
+  if (!forceRefresh && healthCache && Date.now() - healthCache.checkedAt < HEALTH_CACHE_TTL_MS) {
+    return healthCache;
+  }
+  const [r2, cloud] = await Promise.all([probeR2(), probeCloudinary()]);
+  healthCache = { r2, cloudinary: cloud, checkedAt: Date.now() };
+  return healthCache;
 }

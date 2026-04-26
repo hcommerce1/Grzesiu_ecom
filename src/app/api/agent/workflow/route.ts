@@ -10,6 +10,8 @@ import { generateTitle } from '@/lib/title-generator';
 import { logTokenUsage } from '@/lib/token-logger';
 import { calcCost, sumUsage } from '@/lib/token-cost';
 import type { AnthropicUsage } from '@/lib/token-cost';
+import { getUsdToPln } from '@/lib/fx-rate';
+import { parseClaudeJson } from '@/lib/parse-claude-json';
 import { randomUUID } from 'crypto';
 
 const AGENT_MODEL = process.env.AGENT_MODEL || 'claude-haiku-4-5-20251001';
@@ -20,6 +22,8 @@ const VISION_MODEL = process.env.AGENT_VISION_MODEL || 'claude-sonnet-4-6';
 const CATEGORY_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_ITERATIONS = 20;
 
+type Step = 'inventory' | 'category' | 'images' | 'fields-params' | 'preview' | 'approval';
+
 interface AgentRequest {
   message: string;
   mode: 'start' | 'chat';
@@ -28,6 +32,7 @@ interface AgentRequest {
   imagesMeta: ImageMeta[];
   productId: string;
   sessionKey?: string;
+  currentStep?: Step;
 }
 
 interface AgentState {
@@ -52,6 +57,51 @@ function addUsage(state: AgentState, model: string, usage: AnthropicUsage): void
 
 const KEY_ATTRIBUTE_NAMES = ['Marka', 'Materiał', 'Kolor', 'Typ', 'Model', 'Rodzaj'];
 
+const STEP_LABELS: Record<Step, string> = {
+  inventory: 'Magazyn',
+  category: 'Kategoria',
+  images: 'Zdjęcia',
+  'fields-params': 'Parametry',
+  preview: 'Podgląd',
+  approval: 'Wyślij',
+};
+
+const TAB_ALLOWED_TOOLS: Record<Step, Set<string>> = {
+  inventory: new Set([]),
+  category: new Set(['suggest_category']),
+  images: new Set(['analyze_images']),
+  'fields-params': new Set(['fetch_category_parameters', 'fill_parameters', 'validate_parameters', 'update_parameter']),
+  preview: new Set([
+    'generate_title', 'update_title', 'generate_description',
+    'update_section', 'add_section', 'remove_section', 'expand_section',
+    'reorder_sections', 'change_section_layout', 'reorder_section_images',
+    'add_image_to_section', 'remove_image_from_section',
+    'regenerate_description', 'regenerate_title', 'change_description_style',
+  ]),
+  approval: new Set([]),
+};
+
+function imageGuard(imagesMeta: ImageMeta[]): string | null {
+  const totalActive = imagesMeta.filter(img => !img.removed).length;
+  if (totalActive === 0) return null;
+  // Po analizie obrazu, aiConfidence jest >0 tylko dla obrazów które przeszły fetch + analizę Claude.
+  // Placeholder błędu (404/timeout/itd.) ustawia confidence=0.
+  const valid = imagesMeta.filter(img => !img.removed && (img.aiConfidence ?? 0) > 0).length;
+  if (valid === 0) {
+    return JSON.stringify({
+      error: 'Wszystkie zdjęcia mają błąd pobrania — nie mogę generować na pustych analizach. Powiedz userowi żeby najpierw naprawił zdjęcia (zakładka Zdjęcia, np. re-scrape produktu).',
+      awaiting_user_action: true,
+    });
+  }
+  if (totalActive >= 3 && valid / totalActive < 0.5) {
+    return JSON.stringify({
+      error: `Tylko ${valid}/${totalActive} zdjęć ma poprawną analizę — wynik byłby niskiej jakości. Powiedz userowi żeby ponowił analizę zdjęć (lub re-scrape produktu jeśli URL-e są martwe).`,
+      awaiting_user_action: true,
+    });
+  }
+  return null;
+}
+
 function pickKeyAttributes(attrs: Record<string, string> | undefined): Record<string, string> | undefined {
   if (!attrs) return undefined;
   const picked: Record<string, string> = {};
@@ -69,18 +119,18 @@ function pickKeyAttributes(attrs: Record<string, string> | undefined): Record<st
 const TOOLS: Anthropic.Tool[] = [
   {
     name: 'analyze_images',
-    description: 'Analizuje zdjęcia produktu: tekst z etykiet, wymiary, kolor, model, typ zdjęcia. Wywołaj PO potwierdzeniu kategorii przez użytkownika.',
+    description: 'Use when user is on Zdjęcia tab and wants AI photo analysis. Downloads each URL server-side (base64), sends to Claude vision, returns description + labelText + features + variantHint per image. Input: imageUrls array (use state.session.data.images jeśli user nie podał).',
     input_schema: {
       type: 'object',
       properties: {
-        imageUrls: { type: 'array', items: { type: 'string' }, description: 'URL-e zdjęć do analizy' },
+        imageUrls: { type: 'array', items: { type: 'string' }, description: 'URL-e zdjęć do analizy (publiczne)' },
       },
       required: ['imageUrls'],
     },
   },
   {
     name: 'suggest_category',
-    description: 'Sugeruje kategorię Allegro na podstawie tytułu i atrybutów produktu. Wywołaj jeśli kategoria nie jest jeszcze wybrana.',
+    description: 'Use when user is on Kategoria tab and category is not selected yet. Returns top-N kandydatów kategorii Allegro z prowizją na podstawie tytułu i atrybutów. Po wywołaniu zatrzymuje workflow do potwierdzenia użytkownika w UI.',
     input_schema: {
       type: 'object',
       properties: {
@@ -92,7 +142,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'fetch_category_parameters',
-    description: 'Pobiera listę parametrów dla wybranej kategorii Allegro. Wywołaj po wyborze/sugestii kategorii.',
+    description: 'Use when user is on Parametry tab and category parameters are not loaded yet (state.allegroParams empty). Pobiera schema parametrów kategorii Allegro (required/optional, słowniki). Wywołaj raz po wybraniu kategorii.',
     input_schema: {
       type: 'object',
       properties: {
@@ -103,7 +153,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'fill_parameters',
-    description: 'Auto-uzupełnia parametry Allegro używając AI na podstawie danych produktu i analizy zdjęć. Wywołaj po analyze_images i fetch_category_parameters.',
+    description: 'Use when user is on Parametry tab and category parameters already fetched (state.allegroParams not empty). Auto-uzupełnia parametry AI-em na bazie atrybutów produktu i analizy zdjęć. Następny krok po fetch_category_parameters.',
     input_schema: {
       type: 'object',
       properties: {
@@ -113,12 +163,12 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'validate_parameters',
-    description: 'Sprawdza które wymagane parametry są puste. Zwraca listę brakujących z nazwami.',
+    description: 'Use after fill_parameters on Parametry tab — sprawdza które wymagane parametry są nadal puste. Zwraca listę brakujących (z nazwami) + flagę allFilled.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'update_parameter',
-    description: 'Ustawia wartość konkretnego parametru Allegro (po odpowiedzi użytkownika). Dla dictionary zwróć option_id, nie nazwę.',
+    description: 'Use on Parametry tab when user provides value for specific parameter (po pytaniu o brakujące). Dla typu dictionary podaj option_id ze słownika, NIE nazwę.',
     input_schema: {
       type: 'object',
       properties: {
@@ -133,7 +183,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'generate_title',
-    description: 'Generuje tytuł aukcji Allegro (max 75 znaków, WIELKIE LITERY). Wywołaj po uzupełnieniu parametrów.',
+    description: 'Use on Podgląd tab to generate auction title (max 75 znaków, WIELKIE LITERY) na bazie atrybutów + parametrów + analizy zdjęć. Zwraca tytuł główny + 3 alternatywy.',
     input_schema: {
       type: 'object',
       properties: {
@@ -143,7 +193,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'update_title',
-    description: 'Ustawia konkretny tytuł (gdy użytkownik wybrał z kandydatów lub podał własny).',
+    description: 'Use on Podgląd tab when user picks tytuł z kandydatów albo podaje własny — ustawia konkretny string jako tytuł aukcji.',
     input_schema: {
       type: 'object',
       properties: {
@@ -154,7 +204,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'generate_description',
-    description: 'Generuje pełny opis produktu z sekcjami HTML. Wywołaj po generate_title.',
+    description: 'Use on Podgląd tab po generate_title — generuje strukturyzowany opis HTML z sekcjami (heading + bodyHtml + layout). Style: technical (AGD/elektronika), lifestyle (meble/dekoracje), simple (reszta).',
     input_schema: {
       type: 'object',
       properties: {
@@ -169,7 +219,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'update_section',
-    description: 'Aktualizuje treść lub układ konkretnej sekcji w opisie.',
+    description: 'Use on Podgląd tab when user mówi "zmień treść sekcji X" / "popraw nagłówek". Nadpisuje bodyHtml lub heading konkretnej sekcji.',
     input_schema: {
       type: 'object',
       properties: {
@@ -183,7 +233,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'add_section',
-    description: 'Dodaje nową sekcję do opisu produktu.',
+    description: 'Use on Podgląd tab when user mówi "dodaj sekcję X". Wstawia nową sekcję (heading + bodyHtml + layout) do opisu.',
     input_schema: {
       type: 'object',
       properties: {
@@ -197,7 +247,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'remove_section',
-    description: 'Usuwa sekcję z opisu.',
+    description: 'Use on Podgląd tab when user mówi "usuń sekcję X" / "wywal sekcję".',
     input_schema: {
       type: 'object',
       properties: { sectionId: { type: 'string' } },
@@ -207,7 +257,7 @@ const TOOLS: Anthropic.Tool[] = [
   // ─── Section edition extensions ───
   {
     name: 'expand_section',
-    description: 'Rozszerza / dopisuje do istniejącej sekcji (bez nadpisywania). Użyj gdy user prosi "rozbuduj", "dodaj informację do sekcji".',
+    description: 'Use on Podgląd tab when user mówi "rozbuduj sekcję X" / "dodaj informację do sekcji". Generuje pełną nową bodyHtml (rozbudowaną o dodatkowe info) zastępującą starą.',
     input_schema: {
       type: 'object',
       properties: {
@@ -456,135 +506,96 @@ const TOOL_LABELS: Record<string, string> = {
 
 // ─── System prompt ───
 
-function buildSystemPrompt(state: AgentState): string {
+// ─── Static system prompt — cacheable (nie zależy od state) ───
+const ALL_TABS_LINE = (Object.keys(STEP_LABELS) as Step[]).map(k => STEP_LABELS[k]).join(' → ');
+
+const STATIC_SYSTEM_PROMPT = `<role>
+Asystent wystawiania produktów na Allegro. Pomagasz Grzesiowi krok po kroku — od zescrapowanych danych do gotowej oferty.
+</role>
+
+<rules>
+- Pisz po polsku z poprawnymi diakrytykami (ą, ć, ę, ł, ń, ó, ś, ź, ż).
+- Gdy masz dostępne narzędzia — WYWOŁUJ JE od razu. NIE pisz "teraz zrobię X" — user widzi progress w UI.
+- Pisz tekstem TYLKO gdy: trzeba zapytać usera o brakującą informację / błąd nie do obejścia / krótkie podsumowanie po skończeniu.
+- Bez "świetnie!", "teraz zrobię…", "mam to!", "oto co widzę". Bez monologów krok-po-kroku.
+</rules>
+
+<tabs>
+NIGDY nie wymyślaj nazw zakładek. Istniejące zakładki workflow:
+${ALL_TABS_LINE}
+Inne nazwy (np. "Szczegóły produktu", "Podstawowe informacje") NIE ISTNIEJĄ.
+</tabs>
+
+<system_messages>
+Wiadomości zaczynające się od "[SYSTEM]" pochodzą z UI (zmiana zakładki / kategorii) — traktuj je jako konkretny rozkaz, nie odpowiadaj wywodem.
+</system_messages>
+
+<param_rules>
+- Dictionary → zwracaj WYŁĄCZNIE option_id (np. "225088"), NIGDY nazwę.
+- Nie wymyślaj wartości których nie ma w danych produktu.
+- Wymiary przepisuj DOKŁADNIE jak na etykiecie, przelicz jednostki gdy trzeba.
+</param_rules>
+
+<description_rules>
+- Nagłówki sekcji ZAWSZE CAPS: "CECHY I ZALETY", "ZASTOSOWANIA", "SPECYFIKACJA TECHNICZNA".
+- HTML: <b>, <ul>, <li>, <p> — NIE <strong>, <em>.
+- Nie pisz o gwarancji, nie pisz "Stan: Nowy", nie powtarzaj tytułu dosłownie.
+- Layout: "image-text" zdjęcie+tekst, "text-only" bez zdjęcia, "images-only" dla banner/logo.
+</description_rules>`;
+
+// ─── Dynamic state block — idzie jako preludium user message (NIE cacheable) ───
+function buildStateBlock(state: AgentState, currentStep?: Step): string {
   const { session, allegroParams } = state;
   const requiredParams = allegroParams.filter(p => p.required);
-  const optionalParams = allegroParams.filter(p => !p.required);
+  const cat = session.allegroCategory?.path ?? session.allegroCategory?.name ?? '(nie wybrana)';
+  const filledCount = Object.keys(state.filledParameters).length;
 
-  const paramsText = allegroParams.length > 0
-    ? [
-      ...requiredParams.map(p => `[WYMAGANY] ${p.name} (${p.type})${p.unit ? ` [${p.unit}]` : ''} ID=${p.id}`),
-      ...optionalParams.slice(0, 20).map(p => `${p.name} (${p.type}) ID=${p.id}`),
-    ].join('\n')
-    : '(pobierz kategorię najpierw)';
+  const allowed = currentStep ? [...TAB_ALLOWED_TOOLS[currentStep]] : [];
+  const allowedLine = currentStep
+    ? (allowed.length === 0
+        ? '(żadne — odpowiedz krótko po polsku że na tej zakładce nic do zrobienia, zakończ turę)'
+        : allowed.join(', '))
+    : '(brak filtrowania)';
 
   const attrText = Object.entries(session.data?.attributes ?? {})
-    .slice(0, 30)
-    .map(([k, v]) => `- ${k}: ${v}`)
-    .join('\n') || '(brak)';
+    .slice(0, 12)
+    .map(([k, v]) => `  ${k}: ${v}`)
+    .join('\n') || '  (brak)';
 
-  const filledText = Object.keys(state.filledParameters).length > 0
-    ? Object.entries(state.filledParameters).slice(0, 10).map(([k, v]) => `- ${k}: ${JSON.stringify(v)}`).join('\n')
-    : '(brak wypełnionych)';
+  const paramsListing = allegroParams.length > 0
+    ? [
+        ...requiredParams.map(p => `  [WYMAGANY] ${p.name} (${p.type})${p.unit ? ` [${p.unit}]` : ''} ID=${p.id}`),
+        ...allegroParams.filter(p => !p.required).slice(0, 15).map(p => `  ${p.name} (${p.type}) ID=${p.id}`),
+      ].join('\n')
+    : '  (pobierz kategorię najpierw — fetch_category_parameters)';
 
-  return `Jesteś Asystentem Wystawiania na Allegro. Pomagasz Grzesiowi wystawić produkt krok po kroku, od zescrapowanych danych do gotowej oferty.
+  const filledListing = filledCount > 0
+    ? Object.entries(state.filledParameters).slice(0, 10).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')
+    : '  (brak)';
 
-## TWÓJ WORKFLOW (przy mode=start, wykonaj ŚCIŚLE w tej kolejności):
+  return `<state>
+Aktywna zakładka: ${currentStep ? STEP_LABELS[currentStep] : '(brak)'}
+Dostępne na tej zakładce narzędzia: ${allowedLine}
 
-Dane produktu są już zescrapowane i przetłumaczone zanim do Ciebie trafią — nie tykaj tego.
-
-1. KATEGORIA — suggest_category (jeśli session.allegroCategory.id pusty).
-   GATE: po suggest_category NIE WOLNO wywołać żadnego innego toola, dopóki user nie potwierdzi
-   kategorii w UI. Zakończ turę, nic nie pisz, czekaj na wiadomość usera.
-
-2. OPIS ZDJĘĆ — analyze_images (dopiero gdy session.allegroCategory.id jest ustawione;
-   znajomość kategorii poprawia trafność analizy wizji).
-
-3. PARAMETRY — w jednej fazie:
-   a) fetch_category_parameters — pobierz schema parametrów kategorii
-   b) fill_parameters — auto-uzupełnij AI-em
-   c) validate_parameters
-   d) jeśli brakuje wymaganych → zadaj max 3 konkretne pytania userowi bulletami, czekaj na odpowiedź
-
-4. OPIS — generate_description (JEDYNE miejsce, gdzie wolno użyć mocniejszego modelu).
-
-5. Zakończ jednym zdaniem podsumowania. Czekaj na korekty usera.
-
-## ZASADA GATE (kategoria):
-- Po wywołaniu suggest_category NIE wolno wywołać ŻADNEGO innego toola, dopóki session.allegroCategory.id nie zostanie potwierdzone przez usera.
-- Jeśli suggest_category zwróciło sugestie z flagą awaiting_user_selection: true → zakończ turę, nic nie pisz, poczekaj na wiadomość usera.
-
-## generate_title jest POMINIĘTY w głównym flow.
-Tytuł przychodzi już z scrapera + tłumacza. Wywołaj generate_title TYLKO gdy user wprost o to poprosi w chacie.
-
-## STYL WYPOWIEDZI (BARDZO WAŻNE):
-- DOMYŚLNIE nie piszesz tekstu. Narzędzia wykonują pracę. User widzi progress w UI.
-- Piszesz JEDYNIE gdy:
-  (a) coś poszło nie tak — konkretny błąd + co zrobisz dalej,
-  (b) musisz zapytać użytkownika (bullet lista, wymagane parametry),
-  (c) skończyłeś całą sekwencję — 1 zdanie podsumowania.
-- Bez "świetnie!", "teraz zrobię...", "mam to!", "oto co widzę". Bez monologów krok-po-kroku.
-- Pisz PO POLSKU, z poprawnymi znakami diakrytycznymi (ą, ć, ę, ł, ń, ó, ś, ź, ż).
-
-## TRYB EDYCJI (mode=chat po wygenerowaniu opisu):
-Masz pełną kontrolę nad ofertą — wybierz PRECYZYJNY tool do konkretnej prośby:
-
-### Opis / sekcje
-- "zmień treść sekcji X" → update_section (bodyHtml + heading)
-- "rozbuduj / rozszerz sekcję X" → expand_section (pełna nowa bodyHtml z dopisanymi info)
-- "dodaj sekcję Z" → add_section
-- "usuń sekcję" → remove_section
-- "przenieś sekcję X przed Y" / "pouklada sekcje" → reorder_sections (pełna lista ID w nowej kolejności)
-- "zmień layout sekcji" (image-text / text-only / images-only) → change_section_layout
-- "zmień kolejność zdjęć w sekcji" → reorder_section_images (pełna lista URL)
-- "dodaj zdjęcie 2 do sekcji X" → add_image_to_section
-- "usuń zdjęcie z sekcji X" → remove_image_from_section
-- "wygeneruj opis od nowa" / "napisz inaczej" → regenerate_description (opcjonalnie style + additionalContext)
-- "zmień styl na lifestyle/technical/simple" → change_description_style
-- "wygeneruj inny tytuł" → regenerate_title
-
-### Parametry, pola produktu
-- "zmień parametr X na Y" → update_parameter
-- "zmień tytuł" → update_title (jeśli znasz końcowy) lub regenerate_title (jeśli agent ma zaproponować)
-- "zmień cenę" → update_price
-- "zmień VAT / stawkę podatku" → update_tax_rate
-- "zmień SKU / EAN" → update_sku / update_ean
-- "zmień katalog / magazyn" → update_inventory
-
-### Zdjęcia główne produktu
-- "pouklada zdjęcia" → reorder_product_images
-- "dodaj zdjęcie z URL" → add_product_image
-- "usuń zdjęcie" → remove_product_image
-
-### Komunikacja z userem
-- Brakuje kluczowych informacji do dobrego opisu (styl, stan, przeznaczenie)? NIE zgaduj — użyj ask_user (opcjonalnie z options).
-- User wkleił URL (konkurencyjna oferta, strona producenta) → scrape_and_fill_from_url
-- Potwierdzaj krótko co zmieniłeś (1 zdanie, bez narracji krok-po-kroku)
-
-### PREFLIGHT (przed pierwszym generate_description)
-Jeśli w danych brakuje informacji o STYLU ("lifestyle" dla mebli/dekoracji, "technical" dla AGD/narzędzi, "simple" dla reszty)
-lub o STANIE produktu — zadaj jedno pytanie ask_user zanim wywołasz generate_description.
-Gdy masz wystarczająco danych (np. kategoria jasno wskazuje styl) — generuj od razu, nie pytaj zbędnie.
-
-## ZASADY PARAMETRÓW:
-- Dictionary → zwracaj WYŁĄCZNIE option_id (np. "225088"), NIGDY nazwę opcji
-- Nie wymyślaj wartości których nie ma w danych produktu
-- Wymiary przepisuj DOKŁADNIE jak na etykiecie, przelicz jednostki gdy potrzeba
-- Stan produktu → dopasuj do właściwego option_id ze słownika
-
-## DANE PRODUKTU:
-Tytuł: ${session.data?.title ?? '(brak)'}
+Tytuł produktu: ${session.data?.title ?? '(brak)'}
 EAN: ${session.data?.ean ?? '(brak)'} | SKU: ${session.data?.sku ?? '(brak)'}
 Cena: ${session.data?.price ?? '(brak)'} ${session.data?.currency ?? ''}
-Zdjęcia: ${(session.data?.images ?? []).length} szt.
-Kategoria: ${session.allegroCategory?.path ?? session.allegroCategory?.name ?? '(nie wybrana)'}
+Zdjęć w sesji: ${(session.data?.images ?? []).length}
+Kategoria Allegro: ${cat}
+Tytuł aukcji wygenerowany: ${state.generatedTitle ? 'tak' : 'nie'}
+Parametry kategorii: ${allegroParams.length} (wymaganych ${requiredParams.length}, wypełnionych ${filledCount})
 
-Atrybuty ze scrape:
+Atrybuty produktu (skrót):
 ${attrText}
 
-Wypełnione parametry (aktualne):
-${filledText}
+Parametry kategorii (skrót):
+${paramsListing}
 
-## PARAMETRY KATEGORII:
-${paramsText}
-
-## ZASADY OPISU:
-- Nagłówki sekcji ZAWSZE CAPS: "CECHY I ZALETY", "ZASTOSOWANIA", "SPECYFIKACJA TECHNICZNA"
-- layout "image-text" gdy jest zdjęcie, "text-only" bez zdjęcia, "images-only" dla banner/logo
-- HTML: używaj <b>, <ul>, <li>, <p> — NIE używaj <strong>, <em>
-- Nie pisz o gwarancji, nie pisz "Stan: Nowy", nie powtarzaj tytułu dosłownie
-- Zachowaj wymiary DOKŁADNIE jak w danych (np. "120×60×75 cm")`;
+Wypełnione parametry:
+${filledListing}
+</state>`;
 }
+
 
 // ─── Tool executor ───
 
@@ -606,7 +617,15 @@ async function executeTool(
   productId: string,
   sessionKey: string,
   apiKey: string,
+  currentStep?: Step,
 ): Promise<string> {
+  if (currentStep && !TAB_ALLOWED_TOOLS[currentStep].has(toolName)) {
+    return JSON.stringify({
+      error: `TAB_GATE: user jest na zakładce "${STEP_LABELS[currentStep]}", to narzędzie nie należy do tej zakładki. Powiedz userowi krótko co może zrobić w tej zakładce, albo na którą zakładkę musi przejść — NIE wywołuj innych narzędzi.`,
+      awaiting_user_action: true,
+      current_step: currentStep,
+    });
+  }
   if (GATE_BLOCKED_TOOLS.has(toolName) && !state.session.allegroCategory?.id) {
     return JSON.stringify({
       error: 'GATE: kategoria nie jest wybrana. Wywołaj suggest_category i zakończ turę — czekaj na potwierdzenie usera w UI.',
@@ -619,33 +638,65 @@ async function executeTool(
       const urls = (input.imageUrls as string[]) ?? state.session.data?.images ?? [];
       if (!urls.length) return JSON.stringify({ error: 'Brak URL-i zdjęć' });
 
+      // Dedupe — pomijaj URL-e które już mają udaną analizę (aiConfidence > 0).
+      // Bez tego agent może wywołać analyze_images dwa razy w jednej turze i policzyć tokeny vision podwójnie.
+      const analyzedUrls = new Set(
+        state.imagesMeta.filter(m => (m.aiConfidence ?? 0) > 0).map(m => m.url)
+      );
+      const newUrls = urls.filter(u => !analyzedUrls.has(u));
+
+      if (newUrls.length === 0) {
+        return JSON.stringify({
+          already_analyzed: urls.length,
+          stop: true,
+          instruction: 'Wszystkie zdjęcia już przeanalizowane — NIE wywołuj analyze_images ponownie. Zakończ turę.',
+        });
+      }
+
       const context: ProductContext = {
         title: state.session.data?.title,
         categoryPath: state.session.allegroCategory?.path,
         keyAttributes: pickKeyAttributes(state.session.data?.attributes),
       };
-      const { results, usage } = await analyzeImages(urls, apiKey, context);
+      const { results, usage } = await analyzeImages(newUrls, apiKey, context);
 
-      state.imagesMeta = results.map((r, i) => ({
-        url: r.url,
-        order: i,
-        removed: false,
-        aiDescription: r.aiDescription,
-        aiConfidence: r.aiConfidence,
-        isFeatureImage: r.isFeatureImage,
-        features: r.features,
-        userDescription: '',
-        uploadedVia: undefined,
-      }));
+      // Merge: zachowujemy stare przeanalizowane + dokładamy nowe wyniki.
+      const existingByUrl = new Map(state.imagesMeta.map(m => [m.url, m]));
+      const newByUrl = new Map(results.map(r => [r.url, r]));
+      state.imagesMeta = urls.map((url, i) => {
+        const r = newByUrl.get(url);
+        if (r) {
+          return {
+            url,
+            order: i,
+            removed: false,
+            aiDescription: r.aiDescription,
+            aiConfidence: r.aiConfidence,
+            isFeatureImage: r.isFeatureImage,
+            features: r.features,
+            userDescription: '',
+            uploadedVia: undefined,
+          };
+        }
+        const old = existingByUrl.get(url);
+        return old ? { ...old, order: i } : {
+          url, order: i, removed: false,
+          aiDescription: '', aiConfidence: 0, isFeatureImage: false, features: [],
+          userDescription: '', uploadedVia: undefined,
+        };
+      });
 
       logTokenUsage({ productId, sessionKey, toolName, model: VISION_MODEL, usage });
       addUsage(state, VISION_MODEL, usage);
       sseWrite({ type: 'images_analyzed', imagesMeta: state.imagesMeta });
+      // L: persist do session żeby UI/DB wiedział o analizie
+      sseWrite({ type: 'session_patch', patch: { imagesMeta: state.imagesMeta } });
       sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, VISION_MODEL) });
 
       const labelTexts = results.filter(r => r.labelText).map(r => r.labelText).slice(0, 3);
       return JSON.stringify({
-        analyzed: results.length,
+        analyzed_now: results.length,
+        analyzed_total: urls.length,
         labelTexts: labelTexts.length ? labelTexts : null,
         features: results.flatMap(r => r.features).slice(0, 8),
         types: [...new Set(results.map(r => r.imageType))],
@@ -657,6 +708,8 @@ async function executeTool(
         const existing = state.session.allegroCategory;
         return JSON.stringify({
           already_selected: { id: existing.id, name: existing.name, path: existing.path },
+          stop: true,
+          instruction: 'Kategoria już wybrana. NATYCHMIAST zakończ turę (end_turn). NIE wywołuj suggest_category ani żadnego innego toola. Czekaj na zmianę zakładki przez usera.',
         });
       }
 
@@ -706,6 +759,19 @@ async function executeTool(
         return JSON.stringify({ error: 'Brak parametrów — najpierw pobierz kategorię (fetch_category_parameters)' });
       }
 
+      // Guard: jeśli wszystkie wymagane parametry już są wypełnione, nie wołaj AI ponownie
+      const missingRequiredCount = state.allegroParams
+        .filter(p => p.required && !state.filledParameters[p.id]).length;
+      if (missingRequiredCount === 0 && Object.keys(state.filledParameters).length > 0) {
+        return JSON.stringify({
+          filled: 0,
+          totalFilled: Object.keys(state.filledParameters).length,
+          allRequiredFilled: true,
+          stop: true,
+          instruction: 'Wszystkie wymagane parametry są już wypełnione. NIE wywołuj fill_parameters ponownie. Wywołaj validate_parameters żeby potwierdzić — albo zakończ turę.',
+        });
+      }
+
       const { systemPrompt, parameterIds } = buildAutoFillPrompt(
         state.session.data!,
         state.allegroParams,
@@ -714,7 +780,13 @@ async function executeTool(
       );
 
       if (!systemPrompt || !parameterIds.length) {
-        return JSON.stringify({ filled: 0, unfilled: 0, message: 'Wszystkie parametry już wypełnione' });
+        return JSON.stringify({
+          filled: 0,
+          unfilled: 0,
+          message: 'Wszystkie parametry już wypełnione',
+          stop: true,
+          instruction: 'Nie ma więcej parametrów do uzupełnienia. NIE wywołuj fill_parameters ponownie. Zakończ turę.',
+        });
       }
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -743,9 +815,7 @@ async function executeTool(
       const rawText = data.content?.[0]?.text || '{}';
       let rawEntries: unknown[] = [];
       try {
-        const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/);
-        const jsonStr = jsonMatch ? jsonMatch[1].trim() : rawText;
-        const parsed = JSON.parse(jsonStr);
+        const parsed = parseClaudeJson(rawText);
         if (Array.isArray(parsed)) rawEntries = parsed;
         else for (const val of Object.values(parsed as object)) {
           if (Array.isArray(val) && val.length > 0) { rawEntries = val; break; }
@@ -787,6 +857,8 @@ async function executeTool(
     }
 
     case 'generate_title': {
+      const guard = imageGuard(state.imagesMeta);
+      if (guard) return guard;
       const { title, candidates, usage } = await generateTitle(
         { ...state.session, filledParameters: state.filledParameters },
         state.imagesMeta,
@@ -813,7 +885,9 @@ async function executeTool(
     }
 
     case 'generate_description': {
-      const { sections, fullHtml, inputHash, usage } = await generateDescription({
+      const guard = imageGuard(state.imagesMeta);
+      if (guard) return guard;
+      const { sections, fullHtml, inputHash, inputSnapshot, usage } = await generateDescription({
         session: { ...state.session, filledParameters: state.filledParameters, generatedTitle: state.generatedTitle || state.session.generatedTitle },
         imagesMeta: state.imagesMeta,
         style: input.style as 'technical' | 'lifestyle' | 'simple' | undefined,
@@ -823,7 +897,7 @@ async function executeTool(
       logTokenUsage({ productId, sessionKey, toolName, model: DESCRIPTION_MODEL, usage });
       addUsage(state, DESCRIPTION_MODEL, usage);
       state.generatedSections = sections;
-      sseWrite({ type: 'description_generated', sections, fullHtml, inputHash });
+      sseWrite({ type: 'description_generated', sections, fullHtml, inputHash, inputSnapshot });
       sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, DESCRIPTION_MODEL) });
       return JSON.stringify({ sections: sections.length, inputHash });
     }
@@ -888,9 +962,11 @@ async function executeTool(
 
     case 'regenerate_description':
     case 'change_description_style': {
+      const guard = imageGuard(state.imagesMeta);
+      if (guard) return guard;
       const style = (input.style as 'technical' | 'lifestyle' | 'simple' | undefined);
       const additionalContext = input.additionalContext as string | undefined;
-      const { sections, fullHtml, inputHash, usage } = await generateDescription({
+      const { sections, fullHtml, inputHash, inputSnapshot, usage } = await generateDescription({
         session: { ...state.session, filledParameters: state.filledParameters, generatedTitle: state.generatedTitle || state.session.generatedTitle },
         imagesMeta: state.imagesMeta,
         style,
@@ -900,7 +976,7 @@ async function executeTool(
       logTokenUsage({ productId, sessionKey, toolName, model: DESCRIPTION_MODEL, usage });
       addUsage(state, DESCRIPTION_MODEL, usage);
       state.generatedSections = sections;
-      sseWrite({ type: 'description_generated', sections, fullHtml, inputHash });
+      sseWrite({ type: 'description_generated', sections, fullHtml, inputHash, inputSnapshot });
       sseWrite({ type: 'token_usage', toolName, ...usage, ...calcCost(usage, DESCRIPTION_MODEL) });
       if (toolName === 'change_description_style' && style) {
         sseWrite({ type: 'action', action: { type: 'change_description_style', styleValue: style } as ChatAction });
@@ -1032,7 +1108,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body: AgentRequest = await req.json();
-  const { message, mode, conversationHistory, session, imagesMeta, productId } = body;
+  const { message, mode, conversationHistory, session, imagesMeta, productId, currentStep } = body;
   const sessionKey = body.sessionKey ?? randomUUID();
 
   const anthropic = new Anthropic({ apiKey });
@@ -1045,6 +1121,9 @@ export async function POST(req: NextRequest) {
       }
 
       try {
+        // Rozgrzej cache kursu USD/PLN — calcCost() jest synchroniczny i czyta cache
+        await getUsdToPln();
+
         const state: AgentState = {
           session: { ...session },
           imagesMeta: imagesMeta ?? [],
@@ -1055,32 +1134,86 @@ export async function POST(req: NextRequest) {
           usageByModel: {},
         };
 
-        // Build initial messages
+        // Build initial user message — context-aware start zamiast generic "od początku"
+        const categoryAlreadyPicked = !!session.allegroCategory?.id;
+        const paramsAlreadyFilled = Object.keys(session.filledParameters ?? {}).length > 0;
+        const titleAlreadyDone = !!session.generatedTitle;
+        const descriptionAlreadyDone = !!session.generatedDescription;
+
+        const startMessage = ((): string => {
+          if (!currentStep || currentStep === 'inventory') {
+            return 'User otworzył produkt na zakładce Magazyn. Powiedz krótkim zdaniem żeby przeszedł na zakładkę Kategoria. Zakończ turę.';
+          }
+          if (currentStep === 'category' && categoryAlreadyPicked) {
+            return `Kategoria Allegro już wybrana: "${session.allegroCategory?.path ?? session.allegroCategory?.name}". NIE wywołuj suggest_category. Powiedz krótkim zdaniem że kategoria jest, można przejść na zakładkę Zdjęcia. Zakończ turę.`;
+          }
+          if (currentStep === 'fields-params' && paramsAlreadyFilled) {
+            return `Parametry już są częściowo wypełnione (${Object.keys(session.filledParameters ?? {}).length} pól). Wywołaj validate_parameters żeby sprawdzić czy wszystko ok; jeśli brakuje wymaganych — zadaj pytanie. Inaczej zakończ turę.`;
+          }
+          if (currentStep === 'preview' && titleAlreadyDone && descriptionAlreadyDone) {
+            return 'Tytuł i opis już wygenerowane. Czekaj na komendy edycji od usera, nie wywołuj nic samodzielnie. Zakończ turę.';
+          }
+          return `User otworzył produkt — aktywna zakładka: ${STEP_LABELS[currentStep]}. Wykonaj odpowiednie akcje używając dostępnych narzędzi.`;
+        })();
+
         const messages: Anthropic.MessageParam[] = [
           ...conversationHistory.slice(-20).map(m => ({ role: m.role, content: m.content })),
           {
             role: 'user' as const,
-            content: mode === 'start'
-              ? 'Zacznij workflow — przeanalizuj produkt od początku i przeprowadź mnie przez cały proces wystawiania.'
-              : message,
+            content: mode === 'start' ? startMessage : message,
           },
         ];
 
         let iterations = 0;
+        // F: dedupe per-turę — Set widzianych "toolName:JSON.stringify(input)".
+        // Powtórne identyczne wywołanie zwracamy z error+stop, żeby ubić pętle.
+        const seenToolCalls = new Set<string>();
+        // I+J: counter błędów GATE — agent po 2× powinien zakończyć turę.
+        let gateErrorCount = 0;
 
         while (iterations < MAX_ITERATIONS) {
           iterations++;
 
-          // Rebuild system prompt with current state (params may have been fetched)
-          const systemPrompt = buildSystemPrompt(state);
+          // Client-side tool filtering — wysyłamy tylko narzędzia dozwolone na aktualnej zakładce.
+          // Mniej toolów = lepsza decyzja modelu, brak halucynacji o narzędziach z innych zakładek.
+          const allowedNames = currentStep ? TAB_ALLOWED_TOOLS[currentStep] : null;
+          const filteredTools = allowedNames
+            ? TOOLS.filter(t => allowedNames.has(t.name))
+            : TOOLS;
+
+          // tool_choice enforcement — gdy zakładka ma 1 tool wymuś go,
+          // gdy ma >1 i to jest start workflow wymuś dowolny z dostępnych.
+          // ALE: NIE wymuszaj gdy stan wskazuje że nic do zrobienia (already_done)
+          // — inaczej wpadamy w pętlę "tool zwraca already_selected → tool_choice znowu wymusza".
+          const skipToolChoice =
+            (currentStep === 'category' && categoryAlreadyPicked) ||
+            (currentStep === 'preview' && titleAlreadyDone && descriptionAlreadyDone);
+
+          let toolChoice: { type: 'any' } | { type: 'tool'; name: string } | undefined;
+          if (!skipToolChoice) {
+            if (filteredTools.length === 1) {
+              toolChoice = { type: 'tool', name: filteredTools[0].name };
+            } else if (filteredTools.length > 1 && mode === 'start') {
+              toolChoice = { type: 'any' };
+            }
+          }
+
+          // Dynamic state block — zmienia się każdą iterację, NIE wysyłamy go w cache'owanym systemie.
+          // Idzie jako ostatnia user message (świeży snapshot stanu).
+          const stateBlock = buildStateBlock(state, currentStep);
+          const messagesWithState: Anthropic.MessageParam[] = [
+            ...messages,
+            { role: 'user' as const, content: stateBlock },
+          ];
 
           const agentStream = anthropic.messages.stream(
             {
               model: AGENT_MODEL,
               max_tokens: 4096,
-              system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] as Anthropic.TextBlockParam[],
-              tools: TOOLS,
-              messages,
+              system: [{ type: 'text', text: STATIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }] as Anthropic.TextBlockParam[],
+              tools: filteredTools,
+              ...(toolChoice ? { tool_choice: toolChoice } : {}),
+              messages: messagesWithState,
             } as Parameters<typeof anthropic.messages.stream>[0],
             {
               headers: { 'anthropic-beta': 'prompt-caching-2024-07-31' },
@@ -1115,19 +1248,42 @@ export async function POST(req: NextRequest) {
               let resultContent: string;
               let success = true;
 
-              try {
-                resultContent = await executeTool(
-                  tool.name,
-                  tool.input as Record<string, unknown>,
-                  state,
-                  sseWrite,
-                  productId,
-                  sessionKey,
-                  apiKey,
-                );
-              } catch (err) {
-                resultContent = JSON.stringify({ error: String(err) });
+              // F: dedupe — gdy agent próbuje powtórzyć identyczne wywołanie, blokujemy.
+              const callKey = `${tool.name}:${JSON.stringify(tool.input ?? {})}`;
+              if (seenToolCalls.has(callKey)) {
+                resultContent = JSON.stringify({
+                  error: `DUPLICATE_CALL: ${tool.name} z identycznymi parametrami było już wywołane w tej turze. NIE wywołuj go ponownie. Zakończ turę (end_turn).`,
+                  stop: true,
+                });
                 success = false;
+              } else {
+                seenToolCalls.add(callKey);
+                try {
+                  resultContent = await executeTool(
+                    tool.name,
+                    tool.input as Record<string, unknown>,
+                    state,
+                    sseWrite,
+                    productId,
+                    sessionKey,
+                    apiKey,
+                    currentStep,
+                  );
+                } catch (err) {
+                  resultContent = JSON.stringify({ error: String(err) });
+                  success = false;
+                }
+              }
+
+              // I+J: jeśli wynik zawiera GATE/TAB_GATE error, licznik. Po 2× wymuszamy end_turn.
+              if (resultContent.includes('TAB_GATE') || resultContent.includes('"GATE:') || resultContent.startsWith('{"error":"GATE')) {
+                gateErrorCount++;
+                if (gateErrorCount >= 2) {
+                  resultContent = JSON.stringify({
+                    error: 'GATE_LOOP: Próbujesz wywołać zakazane narzędzie po raz drugi. ZAKOŃCZ TURĘ. Powiedz userowi krótkim zdaniem co powinien zrobić.',
+                    stop: true,
+                  });
+                }
               }
 
               let parsedResult: Record<string, unknown> = {};

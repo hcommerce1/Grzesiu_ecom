@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import {
   Sparkles,
   Loader2,
@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select"
 import type {
   ImageMeta,
-  ImageGenPreference,
+  ImageGenMode,
   ImageGenProvider,
   PromptClassification,
   ImageGenResult,
@@ -33,26 +33,37 @@ import {
   getProviderDisplayName,
   getProviderCostHint,
   getIntentDisplayName,
+  detectImageMode,
+  getModeDisplayName,
 } from "@/lib/image-gen-utils"
 
 interface Props {
   activeImages: ImageMeta[]
   onAddImage: (url: string) => void
   onReplaceImage: (oldUrl: string, newUrl: string) => void
+  productId?: string
 }
 
 type Step = "input" | "classified" | "generating" | "result"
 
-export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage }: Props) {
+export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage, productId }: Props) {
   const [prompt, setPrompt] = useState("")
   const [sourceImageUrl, setSourceImageUrl] = useState<string | null>(null)
-  const [preference, setPreference] = useState<ImageGenPreference>("nanobananapro")
+  const [mode, setMode] = useState<ImageGenMode>("generate")
   const [step, setStep] = useState<Step>("input")
+
+  // Auto-update tryb gdy user zmienia źródłowe zdjęcie (heurystyka — user może override radio).
+  useEffect(() => {
+    setMode(detectImageMode(!!sourceImageUrl, prompt))
+    // celowo NIE reagujemy na prompt — zmiana promptu nie powinna nadpisywać ręcznego wyboru radia
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceImageUrl])
 
   // Klasyfikacja
   const [classification, setClassification] = useState<PromptClassification | null>(null)
   const [classifyError, setClassifyError] = useState<string | null>(null)
   const [classifying, setClassifying] = useState(false)
+  const [editedPrompt, setEditedPrompt] = useState("")
 
   // Override providera
   const [providerOverride, setProviderOverride] = useState<ImageGenProvider | null>(null)
@@ -65,7 +76,30 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
   // Wybrany image do zastąpienia
   const [replaceTargetUrl, setReplaceTargetUrl] = useState<string | null>(null)
 
-  const effectiveProvider = providerOverride || classification?.recommendedProvider || preference
+  // Sumaryczny koszt zdjec AI w obrebie tej oferty (resetuje sie automatycznie przez key={item.id} w CollapsibleProductItem)
+  const [totalImageCostUsd, setTotalImageCostUsd] = useState(0)
+  const [usdToPln, setUsdToPln] = useState(4.10)
+
+  // Storage health — blokujemy generację gdy oba (R2 i Cloudinary) offline
+  const [storageOffline, setStorageOffline] = useState(false)
+
+  useEffect(() => {
+    fetch("/api/fx-rate")
+      .then((r) => r.json())
+      .then((d) => {
+        if (typeof d?.pln === "number" && d.pln > 0) setUsdToPln(d.pln)
+      })
+      .catch(() => {/* fallback 4.10 */})
+  }, [])
+
+  useEffect(() => {
+    fetch("/api/images/upload/status")
+      .then((r) => r.json())
+      .then((d) => setStorageOffline(d?.bothOffline === true))
+      .catch(() => setStorageOffline(false))
+  }, [])
+
+  const effectiveProvider: ImageGenProvider = providerOverride || classification?.recommendedProvider || "nanobananapro"
 
   // ─── Klasyfikacja promptu ───
   const handleClassify = useCallback(async () => {
@@ -75,9 +109,19 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
       return
     }
 
+    if (mode === "edit" && !sourceImageUrl) {
+      setClassifyError("Tryb edycji wymaga zdjęcia źródłowego — wybierz zdjęcie lub przełącz na 'Wygeneruj nowe'.")
+      return
+    }
+
     setClassifying(true)
     setClassifyError(null)
     setClassification(null)
+    setEditedPrompt("")
+
+    // Source AI description (gdy istnieje) trafia do Claude'a żeby nie wymyślał wyglądu produktu
+    const sourceMeta = sourceImageUrl ? activeImages.find(i => i.url === sourceImageUrl) : undefined
+    const sourceAiDescription = sourceMeta?.aiDescription || undefined
 
     try {
       const res = await fetch("/api/images/classify-prompt", {
@@ -86,7 +130,9 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
         body: JSON.stringify({
           prompt,
           hasSourceImage: !!sourceImageUrl,
-          preference,
+          mode,
+          sourceAiDescription,
+          productId,
         }),
       })
       const data = await res.json()
@@ -96,24 +142,28 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
         return
       }
 
-      setClassification(data as PromptClassification)
+      const classified = data as PromptClassification
+      setClassification(classified)
 
-      if (!data.isValid) {
-        setClassifyError(data.rejectionReason || "Prompt odrzucony")
+      if (!classified.isValid) {
+        setClassifyError(classified.rejectionReason || "Prompt odrzucony")
         return
       }
 
+      setEditedPrompt(classified.enrichedPrompt || "")
       setStep("classified")
     } catch (err) {
       setClassifyError(err instanceof Error ? err.message : "Błąd klasyfikacji")
     } finally {
       setClassifying(false)
     }
-  }, [prompt, sourceImageUrl, preference])
+  }, [prompt, sourceImageUrl, mode, productId, activeImages])
 
   // ─── Generacja obrazu ───
   const handleGenerate = useCallback(async () => {
     if (!classification?.isValid) return
+
+    const finalPrompt = editedPrompt.trim() || classification.enrichedPrompt
 
     setGenerating(true)
     setGenError(null)
@@ -125,9 +175,10 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: classification.translatedPrompt,
+          prompt: finalPrompt,
           sourceImageUrl: sourceImageUrl || undefined,
           provider: effectiveProvider,
+          mode: classification.mode,
         }),
       })
       const data = (await res.json()) as ImageGenResult
@@ -138,6 +189,10 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
         return
       }
 
+      if (typeof data.costUsd === "number") {
+        setTotalImageCostUsd((prev) => prev + data.costUsd!)
+      }
+
       setResult(data)
       setStep("result")
     } catch (err) {
@@ -146,7 +201,7 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
     } finally {
       setGenerating(false)
     }
-  }, [classification, sourceImageUrl, effectiveProvider])
+  }, [classification, sourceImageUrl, effectiveProvider, editedPrompt])
 
   // ─── Reset ───
   const handleReset = useCallback(() => {
@@ -157,6 +212,7 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
     setResult(null)
     setGenError(null)
     setReplaceTargetUrl(null)
+    setEditedPrompt("")
   }, [])
 
   // ─── Akcje na wyniku ───
@@ -184,6 +240,18 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
   return (
     <div className="rounded-xl border border-border bg-card">
       <div className="px-4 pb-4 pt-3 space-y-4">
+          {storageOffline && (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium">Storage offline</p>
+                <p className="text-xs mt-0.5 text-destructive/80">
+                  Ani R2 ani Cloudinary nie odpowiadają — generacja AI jest wyłączona, bo nie da się trwale zapisać wyniku. Sprawdź konfigurację lub dostępność providerów.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* ─── KROK 1: Input ─── */}
           {(step === "input" || step === "classified") && (
             <>
@@ -204,15 +272,49 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
                 />
               </div>
 
-              {/* Wybór zdjęcia źródłowego */}
+              {/* Toggle trybu (generate/edit) — od razu pod textarea, bo decyduje czy source jest wymagane */}
+              <div className="flex items-center gap-3">
+                <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+                  Tryb:
+                </label>
+                <div className="flex rounded-lg border border-border overflow-hidden">
+                  <button
+                    onClick={() => setMode("generate")}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                      mode === "generate"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:bg-accent"
+                    }`}
+                  >
+                    {getModeDisplayName("generate")}
+                  </button>
+                  <button
+                    onClick={() => setMode("edit")}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-border ${
+                      mode === "edit"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:bg-accent"
+                    }`}
+                  >
+                    {getModeDisplayName("edit")}
+                  </button>
+                </div>
+                {mode === "edit" && !sourceImageUrl && (
+                  <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                    Wybierz zdjęcie źródłowe poniżej
+                  </span>
+                )}
+              </div>
+
+              {/* Wybór zdjęcia źródłowego — większy podgląd, źródło jest zawsze opcjonalnym kontekstem dla AI */}
               {activeImages.length > 0 && (
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">
-                    Zdjęcie źródłowe (opcjonalne — do edycji/usuwania tła)
+                    Zdjęcie źródłowe (opcjonalne kontekst dla AI — wymagane tylko w trybie edycji)
                   </label>
                   <div className="flex gap-3">
-                    {/* Podgląd wybranego zdjęcia */}
-                    <div className="shrink-0 size-32 rounded-lg border-2 border-dashed border-border bg-muted/30 flex items-center justify-center overflow-hidden">
+                    {/* Podgląd wybranego zdjęcia — powiększony do 256px */}
+                    <div className="shrink-0 size-64 rounded-lg border-2 border-dashed border-border bg-muted/30 flex items-center justify-center overflow-hidden">
                       {sourceImageUrl ? (
                         <img
                           src={sourceImageUrl}
@@ -226,11 +328,11 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
                       )}
                     </div>
 
-                    {/* Siatka miniatur */}
+                    {/* Siatka miniatur do wyboru */}
                     <div className="flex gap-2 flex-wrap content-start">
                       <button
                         onClick={() => setSourceImageUrl(null)}
-                        className={`size-14 rounded-lg border-2 flex items-center justify-center text-[10px] text-muted-foreground transition-colors ${
+                        className={`size-16 rounded-lg border-2 flex items-center justify-center text-[10px] text-muted-foreground transition-colors ${
                           !sourceImageUrl
                             ? "border-primary bg-primary/5"
                             : "border-border hover:border-primary/50"
@@ -242,7 +344,7 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
                         <button
                           key={img.url}
                           onClick={() => setSourceImageUrl(img.url)}
-                          className={`relative size-14 rounded-lg border-2 overflow-hidden transition-colors ${
+                          className={`relative size-16 rounded-lg border-2 overflow-hidden transition-colors ${
                             sourceImageUrl === img.url
                               ? "border-primary ring-2 ring-primary/30"
                               : "border-border hover:border-primary/50"
@@ -268,35 +370,6 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
                 </div>
               )}
 
-              {/* Toggle preferencji modelu */}
-              <div className="flex items-center gap-3">
-                <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">
-                  Preferowany model generacji:
-                </label>
-                <div className="flex rounded-lg border border-border overflow-hidden">
-                  <button
-                    onClick={() => setPreference("nanobananapro")}
-                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                      preference === "nanobananapro"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background text-muted-foreground hover:bg-accent"
-                    }`}
-                  >
-                    NanoBananaPro ($$$)
-                  </button>
-                  <button
-                    onClick={() => setPreference("fluxcontextpro")}
-                    className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-border ${
-                      preference === "fluxcontextpro"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background text-muted-foreground hover:bg-accent"
-                    }`}
-                  >
-                    FluxContextPro ($$$$)
-                  </button>
-                </div>
-              </div>
-
               {/* Błąd klasyfikacji */}
               {classifyError && (
                 <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
@@ -317,7 +390,7 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
               {step === "input" && (
                 <Button
                   onClick={handleClassify}
-                  disabled={classifying || !prompt.trim()}
+                  disabled={classifying || !prompt.trim() || storageOffline}
                   size="sm"
                   variant="outline"
                   className="gap-1.5"
@@ -354,23 +427,32 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
                 )}
               </div>
 
-              {/* Przetłumaczony prompt */}
-              <div className="flex items-start gap-2 rounded-lg bg-muted/50 p-3">
-                <Globe className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" />
-                <div className="space-y-1">
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    Prompt EN (wysyłany do modelu)
-                  </p>
-                  <p className="text-sm">{classification.translatedPrompt}</p>
+              {/* Wzbogacony prompt EN — edytowalny. AI rozszerzył twój krótki prompt;
+                  sprawdź, halucynacje wytnij, i wygeneruj. */}
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Prompt EN (wysyłany do modelu) — edytowalny
+                  </label>
                 </div>
+                <textarea
+                  value={editedPrompt}
+                  onChange={(e) => setEditedPrompt(e.target.value)}
+                  rows={5}
+                  className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/20"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  AI rozszerzył twój prompt o szczegóły. Przeczytaj, wytnij ewentualne halucynacje i ewentualnie zedytuj — to ten tekst pójdzie do modelu.
+                </p>
               </div>
 
-              {/* Sugestia poprawki */}
+              {/* Sugestia — co konkretnie AI dodało */}
               {classification.suggestion && (
                 <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950/30">
                   <Lightbulb className="size-4 mt-0.5 shrink-0 text-amber-500" />
                   <div>
-                    <p className="font-medium text-amber-700 dark:text-amber-400">Sugestia</p>
+                    <p className="font-medium text-amber-700 dark:text-amber-400">Co AI dodało</p>
                     <p className="text-amber-600 dark:text-amber-300">{classification.suggestion}</p>
                   </div>
                 </div>
@@ -507,6 +589,16 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage 
                   Generuj kolejne
                 </Button>
               </div>
+            </div>
+          )}
+
+          {/* Sumaryczny koszt zdjęć AI w tej ofercie */}
+          {totalImageCostUsd > 0 && (
+            <div className="border-t border-border pt-2 flex justify-between items-center text-xs">
+              <span className="text-muted-foreground">Wydano na zdjęcia AI w tej ofercie</span>
+              <span className="font-semibold text-foreground">
+                ~{(totalImageCostUsd * usdToPln).toFixed(2)} zł
+              </span>
             </div>
           )}
         </div>

@@ -1,9 +1,10 @@
-import type { ImageMeta, DescriptionSection, AllegroParameter, ProductSession } from './types';
+import type { ImageMeta, DescriptionSection, AllegroParameter, ProductSession, DescriptionInputSnapshot } from './types';
 import { compileSectionsToHtml, computeInputHash, buildInputSnapshot, interpolatePrompt } from './description-utils';
 import { DEFAULT_DESCRIPTION_PROMPT } from './description-prompt';
 import { filterAttributesForAI } from './ai-field-filter';
 import { DESCRIPTION_STYLES, type DescriptionStyleId } from './description-styles';
 import type { AnthropicUsage } from './image-analyzer';
+import { parseClaudeJson } from './parse-claude-json';
 
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
@@ -18,7 +19,7 @@ export interface GenerateDescriptionOptions {
 export async function generateDescription(
   opts: GenerateDescriptionOptions,
   apiKey: string,
-): Promise<{ sections: DescriptionSection[]; fullHtml: string; inputHash: string; usage: AnthropicUsage }> {
+): Promise<{ sections: DescriptionSection[]; fullHtml: string; inputHash: string; inputSnapshot: DescriptionInputSnapshot; usage: AnthropicUsage }> {
   const { session, imagesMeta, style, additionalContext, customPrompt } = opts;
 
   const activeImages = (imagesMeta || [])
@@ -98,11 +99,14 @@ export async function generateDescription(
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: 4000,
-      system: systemPrompt,
+      system: [
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+      ],
       messages: [{ role: 'user', content: 'Wygeneruj strukturalny opis produktu.' }],
     }),
   });
@@ -114,10 +118,10 @@ export async function generateDescription(
   const data = await response.json();
   const usage: AnthropicUsage = data.usage ?? {};
   const content = data.content?.[0]?.text ?? '{}';
-  const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  const parsed = JSON.parse(cleaned);
+  const parsed = parseClaudeJson(content) as { sections?: unknown };
 
-  const rawSections: Array<{ imageIndex?: number; imageIndices?: number[]; heading?: string; body?: string; layout?: string }> = parsed.sections || [];
+  const rawSections: Array<{ imageIndex?: number; imageIndices?: number[]; heading?: string; body?: string; layout?: string }> =
+    (Array.isArray(parsed?.sections) ? parsed.sections : []) as Array<{ imageIndex?: number; imageIndices?: number[]; heading?: string; body?: string; layout?: string }>;
 
   const sections: DescriptionSection[] = rawSections.map((s, idx) => {
     const isImagesOnly = s.layout === 'images-only';
@@ -150,5 +154,5 @@ export async function generateDescription(
   );
   const inputHash = computeInputHash(snapshot);
 
-  return { sections, fullHtml, inputHash, usage };
+  return { sections, fullHtml, inputHash, inputSnapshot: snapshot, usage };
 }

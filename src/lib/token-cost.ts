@@ -1,8 +1,8 @@
 export interface AnthropicUsage {
   input_tokens: number;
   output_tokens: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
 }
 
 export interface TokenCost {
@@ -10,13 +10,14 @@ export interface TokenCost {
   pln: number;
 }
 
+import { getCachedUsdToPln } from './fx-rate';
+
 const PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
   'claude-opus-4-6':           { input: 15 / 1e6,   output: 75 / 1e6,  cacheWrite: 18.75 / 1e6, cacheRead: 1.5 / 1e6 },
+  'claude-opus-4-7':           { input: 15 / 1e6,   output: 75 / 1e6,  cacheWrite: 18.75 / 1e6, cacheRead: 1.5 / 1e6 },
   'claude-sonnet-4-6':         { input: 3 / 1e6,    output: 15 / 1e6,  cacheWrite: 3.75 / 1e6,  cacheRead: 0.3 / 1e6 },
-  'claude-haiku-4-5-20251001': { input: 0.8 / 1e6,  output: 4 / 1e6,   cacheWrite: 1 / 1e6,     cacheRead: 0.08 / 1e6 },
+  'claude-haiku-4-5-20251001': { input: 1 / 1e6,    output: 5 / 1e6,   cacheWrite: 1.25 / 1e6,  cacheRead: 0.10 / 1e6 },
 };
-
-const USD_TO_PLN = 4.0;
 
 export function calcCost(usage: AnthropicUsage, model: string): TokenCost {
   const p = PRICING[model] ?? PRICING['claude-sonnet-4-6'];
@@ -25,7 +26,7 @@ export function calcCost(usage: AnthropicUsage, model: string): TokenCost {
     usage.output_tokens * p.output +
     (usage.cache_creation_input_tokens ?? 0) * p.cacheWrite +
     (usage.cache_read_input_tokens ?? 0) * p.cacheRead;
-  return { usd, pln: usd * USD_TO_PLN };
+  return { usd, pln: usd * getCachedUsdToPln() };
 }
 
 export function sumUsage(usages: AnthropicUsage[]): AnthropicUsage {

@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { buildAutoFillPrompt, validateAutoFillResponse } from '@/lib/ai-autofill';
+import { logTokenUsage } from '@/lib/token-logger';
+import { calcCost } from '@/lib/token-cost';
+import type { AnthropicUsage } from '@/lib/token-cost';
 import type { AllegroParameter, ProductData } from '@/lib/types';
+import { parseClaudeJson } from '@/lib/parse-claude-json';
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const AUTOFILL_MODEL = process.env.AUTOFILL_MODEL || 'claude-haiku-4-5-20251001';
@@ -10,6 +14,8 @@ interface AutoFillRequest {
   parameters: AllegroParameter[];
   alreadyFilled?: Record<string, string | string[]>;
   imageMeta?: Array<{ url: string; aiDescription?: string; features?: string[] }>;
+  productId?: string;
+  sessionKey?: string;
 }
 
 export async function POST(req: Request) {
@@ -74,16 +80,19 @@ export async function POST(req: Request) {
     }
 
     const data = await response.json();
+    const usage: AnthropicUsage = data.usage ?? {};
+    logTokenUsage({
+      productId: body.productId ?? 'local',
+      sessionKey: body.sessionKey,
+      toolName: 'ai_autofill',
+      model: AUTOFILL_MODEL,
+      usage,
+    });
     // Anthropic returns content as array: data.content[0].text
     const content = data.content?.[0]?.text || '{}';
     console.log('[AI auto-fill] Raw Claude response (first 500 chars):', content.slice(0, 500));
 
-    // Extract JSON — Claude may wrap in markdown code fences
-    let jsonStr = content;
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) jsonStr = jsonMatch[1].trim();
-
-    const parsed = JSON.parse(jsonStr);
+    const parsed = parseClaudeJson(content);
 
     let rawEntries: unknown[] = [];
     if (Array.isArray(parsed)) {
@@ -104,7 +113,8 @@ export async function POST(req: Request) {
       body.productData,
     );
 
-    return NextResponse.json(result);
+    const cost = calcCost(usage, AUTOFILL_MODEL);
+    return NextResponse.json({ ...result, usage, cost });
   } catch (err) {
     console.error('AI auto-fill failed:', err);
     return NextResponse.json(

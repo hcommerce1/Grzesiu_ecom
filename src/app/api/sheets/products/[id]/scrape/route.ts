@@ -80,7 +80,7 @@ export async function POST(
     let originalData = result.data;
     let translationFailed = false;
     try {
-      translatedData = await translateProduct(result.data, systemPrompt);
+      translatedData = await translateProduct(result.data, systemPrompt, { productId: id });
       originalData = result.data;
     } catch (translateErr) {
       console.warn('Translation failed for sheet product:', translateErr);

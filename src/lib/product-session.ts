@@ -1,49 +1,159 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import type { ProductSession, FieldSelection } from './types';
 export { createDefaultFieldSelection } from './field-selection';
 
-const SESSION_FILE = path.join(process.cwd(), 'tmp', 'product-session.json');
+const SESSIONS_DIR = path.join(process.cwd(), 'tmp', 'sessions');
+const ACTIVE_POINTER = path.join(process.cwd(), 'tmp', 'session-active.json');
+const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 dni
 
-function ensureTmpDir() {
-  const dir = path.dirname(SESSION_FILE);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+function ensureDir() {
+  if (!fs.existsSync(SESSIONS_DIR)) {
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
   }
 }
 
-export function getSession(): ProductSession | null {
-  ensureTmpDir();
-  if (!fs.existsSync(SESSION_FILE)) return null;
+function sanitizeKey(key: string): string {
+  // Whitelist: a-z, A-Z, 0-9, _, -. Reszta → hash do hex.
+  if (/^[a-zA-Z0-9_-]+$/.test(key)) return key;
+  return crypto.createHash('sha1').update(key).digest('hex').slice(0, 24);
+}
+
+function pathForKey(key: string): string {
+  return path.join(SESSIONS_DIR, `${sanitizeKey(key)}.json`);
+}
+
+/**
+ * Wyznacza productKey z sesji — preferuje BL product_id (edit), potem sheet, potem hash URL,
+ * a w ostateczności '_default' (free-form scrape bez identyfikatora).
+ */
+export function deriveProductKey(session: Partial<ProductSession>): string {
+  if (session.product_id) return `bl_${session.product_id}`;
+  if (session.sheetProductId) return `sheet_${session.sheetProductId}`;
+  if (session.data?.url) return `url_${crypto.createHash('sha1').update(session.data.url).digest('hex').slice(0, 16)}`;
+  return '_default';
+}
+
+function getActiveKey(): string | null {
   try {
-    const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
+    const raw = fs.readFileSync(ACTIVE_POINTER, 'utf-8');
+    const parsed = JSON.parse(raw) as { activeKey?: string };
+    return parsed.activeKey ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function setActiveKey(key: string | null): void {
+  ensureDir();
+  if (key === null) {
+    if (fs.existsSync(ACTIVE_POINTER)) fs.unlinkSync(ACTIVE_POINTER);
+    return;
+  }
+  fs.writeFileSync(ACTIVE_POINTER, JSON.stringify({ activeKey: key }), 'utf-8');
+}
+
+/**
+ * Pobiera sesję z konkretnego klucza (edytowany produkt) lub aktywną sesję (gdy klucz pominięty).
+ * Wsteczna kompatybilność — istniejące callsite-y bez argumentu działają jak dotychczas.
+ */
+export function getSession(productKey?: string): ProductSession | null {
+  ensureDir();
+  const key = productKey ?? getActiveKey();
+  if (!key) return null;
+  const file = pathForKey(key);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const raw = fs.readFileSync(file, 'utf-8');
     return JSON.parse(raw) as ProductSession;
   } catch {
     return null;
   }
 }
 
-export function saveSession(session: ProductSession): void {
-  ensureTmpDir();
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2), 'utf-8');
+export function saveSession(session: ProductSession, productKey?: string): void {
+  ensureDir();
+  const key = productKey ?? deriveProductKey(session);
+  const file = pathForKey(key);
+  fs.writeFileSync(file, JSON.stringify(session, null, 2), 'utf-8');
+  setActiveKey(key);
 }
 
-export function clearSession(): void {
-  if (fs.existsSync(SESSION_FILE)) {
-    fs.unlinkSync(SESSION_FILE);
+export function clearSession(productKey?: string): void {
+  const key = productKey ?? getActiveKey();
+  if (!key) return;
+  const file = pathForKey(key);
+  if (fs.existsSync(file)) fs.unlinkSync(file);
+  // Gdy kasujemy aktywną — wyzeruj pointer.
+  if (getActiveKey() === key) setActiveKey(null);
+}
+
+interface SessionSummary {
+  productKey: string;
+  lastTouched: number;
+  step?: string;
+  title?: string;
+  hasGeneratedDescription: boolean;
+  hasFilledParameters: boolean;
+  productId?: string | number;
+  sheetProductId?: string;
+  url?: string;
+}
+
+/**
+ * Lista wszystkich snapshot-ów (do badge "w trakcie edycji" + historia scrape).
+ * Filtrowane do TTL 30 dni — starsze ignorujemy.
+ */
+export function listSessions(): SessionSummary[] {
+  ensureDir();
+  const now = Date.now();
+  const out: SessionSummary[] = [];
+  for (const fname of fs.readdirSync(SESSIONS_DIR)) {
+    if (!fname.endsWith('.json')) continue;
+    const full = path.join(SESSIONS_DIR, fname);
+    try {
+      const stat = fs.statSync(full);
+      const lastTouched = stat.mtimeMs;
+      if (now - lastTouched > SNAPSHOT_TTL_MS) continue;
+      const session = JSON.parse(fs.readFileSync(full, 'utf-8')) as ProductSession;
+      out.push({
+        productKey: fname.replace(/\.json$/, ''),
+        lastTouched,
+        step: session.currentStep,
+        title: session.data?.title || session.generatedTitle,
+        hasGeneratedDescription: !!session.generatedDescription?.fullHtml,
+        hasFilledParameters: Object.keys(session.filledParameters ?? {}).length > 0,
+        productId: session.product_id,
+        sheetProductId: session.sheetProductId,
+        url: session.data?.url,
+      });
+    } catch {
+      // ignoruj uszkodzone pliki
+    }
   }
+  return out.sort((a, b) => b.lastTouched - a.lastTouched);
 }
 
 export function buildBaselinkerPayload(session: ProductSession): Record<string, unknown> {
-  const { data, fieldSelection, mode, inventoryId, defaultWarehouse } = session;
+  const { data, mode, inventoryId, defaultWarehouse } = session;
   const efv = session.editableFieldValues ?? {};
   const warehouseKey = defaultWarehouse
     ? (String(defaultWarehouse).startsWith('bl_') ? String(defaultWarehouse) : `bl_${defaultWarehouse}`)
     : undefined;
 
+  // fieldSelection wymuszone — opis/zdjęcia/parametry zawsze TAK, bundle zawsze NIE.
+  // User usunął te checkboxy z UI bo i tak zawsze są wysyłane.
+  const fieldSelection: FieldSelection = {
+    ...(session.fieldSelection ?? {}),
+    description: true,
+    images: true,
+    features: true,
+  };
+
   const payload: Record<string, unknown> = {
     inventory_id: inventoryId,
-    is_bundle: session.is_bundle ?? (mode === 'bundle'),
+    is_bundle: false, // wymuszone — bundle nie jest już używany w workflow
     tax_rate: session.tax_rate,
     text_fields: {
       name: data.title,
@@ -185,9 +295,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     if (session.parent_id) payload['parent_id'] = session.parent_id;
     if (session.product_id) payload['product_id'] = session.product_id;
   }
-  if (session.is_bundle && session.bundle_products) {
-    payload['bundle_products'] = session.bundle_products;
-  }
+  // bundle_products pomijamy — is_bundle wymuszone na false
 
   return payload;
 }

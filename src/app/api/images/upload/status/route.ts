@@ -1,9 +1,14 @@
 import { NextResponse } from 'next/server';
-import { isConfigured } from '@/lib/cloud-storage';
+import { getStorageHealth } from '@/lib/cloud-storage';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const force = url.searchParams.get('refresh') === '1';
+  const health = await getStorageHealth(force);
   return NextResponse.json({
-    r2: isConfigured('r2'),
-    cloudinary: isConfigured('cloudinary'),
+    r2: health.r2,
+    cloudinary: health.cloudinary,
+    checkedAt: health.checkedAt,
+    bothOffline: !health.r2 && !health.cloudinary,
   });
 }

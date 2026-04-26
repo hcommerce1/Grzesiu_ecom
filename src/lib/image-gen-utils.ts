@@ -1,4 +1,4 @@
-import type { ImageGenIntent, ImageGenPreference, ImageGenProvider } from './types';
+import type { ImageGenIntent, ImageGenMode, ImageGenProvider } from './types';
 
 /**
  * Kliencka pre-walidacja promptu PRZED wysłaniem do API klasyfikacji.
@@ -27,25 +27,6 @@ export function isPromptValid(prompt: string): { valid: boolean; reason?: string
   }
 
   return { valid: true };
-}
-
-/**
- * Mapowanie intencji na provider z uwzględnieniem preferencji użytkownika.
- */
-export function getProviderForIntent(
-  intent: ImageGenIntent,
-  preference: ImageGenPreference,
-): ImageGenProvider {
-  switch (intent) {
-    case 'background_removal':
-      return 'removebg';
-    case 'simple_edit':
-      return 'replicate';
-    case 'generation':
-      return preference;
-    case 'context_edit':
-      return 'fluxcontextpro';
-  }
 }
 
 /**
@@ -93,5 +74,30 @@ export function getIntentDisplayName(intent: ImageGenIntent): string {
       return 'Generacja zdjęcia';
     case 'context_edit':
       return 'Edycja kontekstowa';
+  }
+}
+
+/**
+ * Deterministyczna detekcja trybu (generate vs edit) bez wywołania AI.
+ * Brak source image → zawsze generate.
+ * Jest source + prompt mówi "wygeneruj/stwórz nowe" → generate.
+ * Jest source + reszta → edit.
+ */
+export function detectImageMode(hasSourceImage: boolean, prompt: string): ImageGenMode {
+  if (!hasSourceImage) return 'generate';
+  const generateKeywords = /\b(wygeneruj|stw[oó]rz|zr[oó]b\s+nowe|nowe\s+zdj[eę]cie|od\s+nowa|generate|create\s+new)\b/i;
+  if (generateKeywords.test(prompt)) return 'generate';
+  return 'edit';
+}
+
+/**
+ * Polska nazwa trybu.
+ */
+export function getModeDisplayName(mode: ImageGenMode): string {
+  switch (mode) {
+    case 'generate':
+      return 'Wygeneruj nowe';
+    case 'edit':
+      return 'Edytuj istniejące';
   }
 }

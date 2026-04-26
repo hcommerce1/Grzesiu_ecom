@@ -6,11 +6,13 @@ import { CategorySelector } from "./CategorySelector"
 import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
 import { ApprovalDrawer } from "./ApprovalDrawer"
 import { PreviewContainer } from "./previews/PreviewContainer"
+import { TokenCostBadge } from "./TokenCostBadge"
 import { ImageManagementStep } from "./ImageManagementStep"
-import { AgentPanel } from "./AgentPanel"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import * as Dialog from "@radix-ui/react-dialog"
 import { cn } from "@/lib/utils"
+import { useEditProgressStore } from "@/lib/stores/edit-progress-store"
 import { toast } from "sonner"
 import { compileSectionsToHtml, buildInputSnapshot, classifyChangesDetailed } from "@/lib/description-utils"
 import { DEFAULT_DESCRIPTION_PROMPT } from "@/lib/description-prompt"
@@ -54,7 +56,7 @@ interface Props {
   referenceDescription?: string
 }
 
-type Step = "inventory" | "category" | "images" | "fields-params" | "preview" | "approval"
+export type Step = "inventory" | "category" | "images" | "fields-params" | "preview" | "approval"
 
 const STEPS: { key: Step; label: string; icon: React.ReactNode }[] = [
   { key: "inventory", label: "Magazyn", icon: <Settings2 className="size-3.5" /> },
@@ -90,6 +92,19 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   // Opis strukturalny
   const [generatedDescription, setGeneratedDescription] = useState<GeneratedDescription | undefined>()
   const [descriptionSnapshot, setDescriptionSnapshot] = useState<DescriptionInputSnapshot | undefined>()
+
+  // Auto-generate Podgląd state
+  const [isGeneratingDesc, setIsGeneratingDesc] = useState(false)
+  const [generationError, setGenerationError] = useState<string | null>(null)
+  const lastGeneratedKey = useRef<string>('')
+  const generationAbortRef = useRef<AbortController | null>(null)
+
+  // Validation modal — pre-generation check (E6)
+  const [showValidationModal, setShowValidationModal] = useState(false)
+  const [validationOverride, setValidationOverride] = useState(false)
+
+  // E4: confirmation modal "Zacznij od nowa" — kasuje snapshot per-produkt i resetuje state UI.
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
 
   // Parametry lokalne (dla synchronizacji z czatem)
   const [localParameters, setLocalParameters] = useState<Record<string, string | string[]>>({})
@@ -371,7 +386,10 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
   useEffect(() => {
     loadBLCache()
-    fetch("/api/product-session")
+    const sessionUrl = productKey
+      ? `/api/product-session?productKey=${encodeURIComponent(productKey)}`
+      : "/api/product-session"
+    fetch(sessionUrl)
       .then((r) => r.json())
       .then((d) => {
         setSession(d.session)
@@ -398,6 +416,13 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           if (d.session.extraFieldValues) setExtraFieldValues(d.session.extraFieldValues)
           if (d.session.editableFieldValues) setEditableFieldValues(d.session.editableFieldValues)
           if (d.session.tax_rate != null) setLocalTaxRate(d.session.tax_rate)
+        }
+        // Prefill editableFieldValues z BL danych (price, stock, manufacturer, dimensions itd.)
+        // gdy sesja nie pasuje (nowy produkt do edytowania) lub nie ma jeszcze editableFieldValues.
+        if ((!sessionMatchesProduct || !d.session?.editableFieldValues) && productData.editPrefill) {
+          setEditableFieldValues(prev => ({ ...productData.editPrefill, ...prev }))
+        }
+        if (sessionMatchesProduct) {
           if (d.session.is_bundle != null) setIsBundle(d.session.is_bundle)
           if (d.session.bundle_products) setBundleProducts(d.session.bundle_products)
         }
@@ -449,11 +474,26 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }
 
+  const markEditProgress = useEditProgressStore((s) => s.markProgress)
+  const clearEditProgress = useEditProgressStore((s) => s.clearProgress)
+
+  // Klucz sesji per-produkt — pozwala na równoczesne snapshoty wielu produktów (E4).
+  // Dla edit i sheet klucz jest deterministyczny po stronie klienta.
+  // Dla scrape (url-based) klient pomija — server używa active session.
+  const productKey: string | undefined = editProductId
+    ? `bl_${editProductId}`
+    : sheetProductId
+      ? `sheet_${sheetProductId}`
+      : undefined
+
   async function updateSession(patch: Partial<ProductSession>) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10_000)
     try {
-      const res = await fetch("/api/product-session", {
+      const sessionUrl = productKey
+        ? `/api/product-session?productKey=${encodeURIComponent(productKey)}`
+        : "/api/product-session"
+      const res = await fetch(sessionUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -461,6 +501,14 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       })
       const data = await res.json()
       setSession(data.session)
+      // Mark progres dla edycji istniejącego produktu (E10 — badge "W trakcie edycji")
+      if (editProductId) {
+        markEditProgress(editProductId, {
+          lastStep: data.session?.currentStep,
+          hasGeneratedDescription: !!data.session?.generatedDescription?.fullHtml,
+          hasFilledParameters: Object.keys(data.session?.filledParameters ?? {}).length > 0,
+        })
+      }
       return data.session as ProductSession
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -779,6 +827,50 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     return { valid: errors.length === 0, errors }
   }
 
+  // E4: reset całego workflow dla tego produktu — kasuje snapshot na serwerze i czyści state UI.
+  async function handleResetWorkflow() {
+    setShowResetConfirm(false)
+    try {
+      const url = productKey
+        ? `/api/product-session?productKey=${encodeURIComponent(productKey)}`
+        : "/api/product-session"
+      await fetch(url, { method: "DELETE" })
+    } catch {/* non-fatal — i tak czyścimy state lokalny */}
+
+    if (editProductId) clearEditProgress(editProductId)
+
+    // Reset wszystkich relevantnych state-ów
+    setSession(null)
+    setLocalParameters({})
+    setLocalTitle("")
+    setIsTitleGenerated(false)
+    setTitleCandidates([])
+    setGeneratedDescription(undefined)
+    setDescriptionSnapshot(undefined)
+    setDescriptionVersions([])
+    setVersionIndex(-1)
+    setEditableFieldValues({})
+    setExtraFieldValues({})
+    setAiFillResults([])
+    setAiFillStatus('idle')
+    setShowChangeBanner(false)
+    setChangeClassification({ severity: 'none', changes: [] })
+    setValidationOverride(false)
+    lastGeneratedKey.current = ''
+    // Zdjęcia — odzyskaj z productData (BL/scrape source)
+    if (productData?.images?.length) {
+      setImagesMeta(productData.images.map((url, i) => ({
+        url, order: i, removed: false, aiDescription: '',
+        aiConfidence: 0, userDescription: '', isFeatureImage: false, features: [],
+      })))
+    } else {
+      setImagesMeta([])
+    }
+    setCurrentStep(STEPS[0].key)
+    setMaxVisitedStep(0)
+    toast.success("Workflow zresetowany — możesz zacząć od nowa")
+  }
+
   function goToStep(step: Step) {
     setCurrentStep(step)
     if (sheetProductId) {
@@ -932,7 +1024,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 </div>
               </div>
             )}
-            <CategorySelector onSelect={handleCategorySelect} onReset={handleCategoryReset} selectedCategory={session?.allegroCategory} productData={productData} />
+            <CategorySelector onSelect={handleCategorySelect} onReset={handleCategoryReset} selectedCategory={session?.allegroCategory} productData={productData} productId={sheetProductId ?? editProductId} />
             {editProductId && !session?.allegroCategory && (
               <button
                 onClick={() => goToStep('images')}
@@ -950,6 +1042,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             <ImageManagementStep
               images={productData.images}
               imagesMeta={imagesMeta}
+              productId={sheetProductId ?? editProductId}
+              allowUpload={session?.mode !== "edit"}
               onImagesMetaChange={(meta) => {
                 setImagesMeta(meta)
                 updateSession({ imagesMeta: meta })
@@ -1241,17 +1335,60 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
             {/* ═══ Podgląd marketplace ═══ */}
             {generatedDescription?.fullHtml ? (
-              <PreviewContainer
-                title={localTitle}
-                fullHtml={generatedDescription.fullHtml}
-                imagesMeta={imagesMeta}
-                parameters={localParameters}
-                parameterDefs={session?.allegroParameters ?? []}
-              />
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-xs text-muted-foreground">
+                    {generatedDescription.generatedAt
+                      ? `Wygenerowano: ${new Date(generatedDescription.generatedAt).toLocaleString()}`
+                      : 'Wygenerowany opis'}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={triggerRegeneration}
+                    disabled={isGeneratingDesc}
+                    className="gap-1.5"
+                  >
+                    <RefreshCw className="size-3.5" />
+                    Generuj od nowa
+                  </Button>
+                </div>
+                <PreviewContainer
+                  title={localTitle}
+                  fullHtml={generatedDescription.fullHtml}
+                  imagesMeta={imagesMeta}
+                  parameters={localParameters}
+                  parameterDefs={session?.allegroParameters ?? []}
+                />
+              </>
+            ) : isGeneratingDesc ? (
+              <div className="rounded-lg border border-dashed border-primary/30 bg-primary/5 px-4 py-12 text-center">
+                <Loader2 className="size-8 mx-auto mb-3 animate-spin text-primary" />
+                <p className="text-sm font-medium text-foreground">Generuję tytuł i opis…</p>
+                <p className="text-xs text-muted-foreground mt-1">Trwa zazwyczaj 15-30 sekund. Używam kategorii, parametrów i analizy zdjęć.</p>
+              </div>
+            ) : generationError ? (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-6 text-sm text-destructive">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="size-5 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-medium">Nie udało się wygenerować opisu</p>
+                    <p className="text-xs mt-1">{generationError}</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      onClick={triggerRegeneration}
+                    >
+                      Spróbuj ponownie
+                    </Button>
+                  </div>
+                </div>
+              </div>
             ) : (
               <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
                 <Loader2 className="size-6 mx-auto mb-2 animate-spin opacity-50" />
-                Asystent po prawej generuje opis — po ukończeniu pojawi się tu podgląd.
+                Przygotowuję generowanie opisu…
               </div>
             )}
 
@@ -1475,12 +1612,26 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }
 
-  // Agent: description generated callback
-  function handleAgentDescriptionGenerated(sections: DescriptionSection[], fullHtml: string) {
+  // Description generated callback (apply to UI + persist)
+  // Używane przez auto-generate w Podglądzie i przez ręczne regeneracje.
+  function handleAgentDescriptionGenerated(
+    sections: DescriptionSection[],
+    fullHtml: string,
+    inputSnapshot?: DescriptionInputSnapshot,
+  ) {
     // Push previous version before replacing (cofanie zmian)
     if (generatedDescription) {
       pushDescriptionVersion(generatedDescription, localTitle, 'Przed regeneracją')
     }
+    // Snapshot z eventu agenta to source of truth — buduje go ta sama funkcja
+    // co generateDescription, więc change-detection nie pokaże fałszywego "dane zmienione".
+    const snapshot = inputSnapshot ?? buildInputSnapshot(
+      localTitle,
+      imagesMeta,
+      localParameters,
+      session?.allegroCategory?.id ?? '',
+      productData.attributes,
+    )
     const desc: GeneratedDescription = {
       sections,
       fullHtml,
@@ -1488,19 +1639,122 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       inputHash: '',
     }
     setGeneratedDescription(desc)
-    // Zapisz snapshot (żeby change detection wiedział od czego porównywać)
-    const snapshot = buildInputSnapshot(
-      localTitle,
-      imagesMeta,
-      localParameters,
-      session?.allegroCategory?.id ?? '',
-      productData.attributes,
-    )
     setDescriptionSnapshot(snapshot)
     setChangeClassification({ severity: 'none', changes: [] })
     setShowChangeBanner(false)
     updateSession({ generatedDescription: desc, descriptionInputSnapshot: snapshot }).catch(() => {/* non-fatal */})
   }
+
+  // ─── Auto-generate tytuł + opis przy wejściu na zakładkę Podgląd ───
+  // Wywołuje 2 endpointy sekwencyjnie. Anti-loop guard po klucz: cat:imgCount:paramsCount.
+  // AbortController żeby przerwać gdy user opuści Podgląd przed ukończeniem.
+  useEffect(() => {
+    if (currentStep !== 'preview') return
+    if (!session?.allegroCategory?.id) {
+      setGenerationError('Wybierz kategorię w zakładce „Kategoria" zanim wygenerujesz opis.')
+      return
+    }
+    if (generatedDescription?.fullHtml) return // Już mamy opis — nie regeneruj automatycznie
+    if (isGeneratingDesc) return
+
+    // E6: walidacja braków przed odpaleniem generacji.
+    const noParameters = Object.keys(localParameters).length === 0
+    const imagesWithoutDesc = imagesMeta.filter(m => !m.removed && !(m.aiDescription || '').trim()).length
+    const hasIssues = noParameters || imagesWithoutDesc > 0
+    if (hasIssues && !validationOverride) {
+      setShowValidationModal(true)
+      return
+    }
+
+    const validImagesCount = imagesMeta.filter(m => !m.removed && (m.aiConfidence ?? 0) > 0).length
+    const filledKeys = Object.keys(localParameters).length
+    const key = `${session.allegroCategory.id}:${validImagesCount}:${filledKeys}:${localTitle.length}`
+    if (lastGeneratedKey.current === key) return
+    lastGeneratedKey.current = key
+
+    const ac = new AbortController()
+    generationAbortRef.current = ac
+
+    ;(async () => {
+      setIsGeneratingDesc(true)
+      setGenerationError(null)
+      try {
+        const productId = sheetProductId ?? editProductId ?? 'local'
+        const sessionForApi: ProductSession = {
+          ...session,
+          filledParameters: localParameters,
+          generatedTitle: isTitleGenerated ? localTitle : undefined,
+        }
+
+        // 1. Tytuł — tylko jeśli jeszcze nie wygenerowany przez user/AI
+        if (!isTitleGenerated || !localTitle?.trim()) {
+          const titleRes = await fetch('/api/generate-title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: ac.signal,
+            body: JSON.stringify({ session: sessionForApi, imagesMeta, productId }),
+          })
+          if (!titleRes.ok) throw new Error(`Tytuł: HTTP ${titleRes.status}`)
+          const titleData = await titleRes.json()
+          if (titleData.title) {
+            setLocalTitle(titleData.title)
+            setIsTitleGenerated(true)
+            setTitleCandidates(titleData.candidates ?? [])
+            await updateSession({
+              generatedTitle: titleData.title,
+              titleCandidates: titleData.candidates ?? [],
+            }).catch(() => {})
+            sessionForApi.generatedTitle = titleData.title
+          }
+        }
+
+        // 2. Opis
+        const descRes = await fetch('/api/generate-description', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: ac.signal,
+          body: JSON.stringify({ session: sessionForApi, imagesMeta, productId }),
+        })
+        if (!descRes.ok) throw new Error(`Opis: HTTP ${descRes.status}`)
+        const descData = await descRes.json()
+        if (descData.error) throw new Error(descData.error)
+
+        handleAgentDescriptionGenerated(descData.sections, descData.fullHtml, descData.inputSnapshot)
+        if (descData.warning) toast.warning(descData.warning)
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[auto-generate]', msg)
+        setGenerationError(msg)
+        toast.error(`Błąd generowania: ${msg}`)
+      } finally {
+        setIsGeneratingDesc(false)
+        if (generationAbortRef.current === ac) generationAbortRef.current = null
+      }
+    })()
+
+    return () => {
+      ac.abort()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep, session?.allegroCategory?.id, generatedDescription?.fullHtml, validationOverride])
+
+  // Ręczna regeneracja opisu: abort + reset stanu → useEffect powyżej odpali ponownie.
+  const triggerRegeneration = useCallback(() => {
+    if (generationAbortRef.current) {
+      generationAbortRef.current.abort()
+      generationAbortRef.current = null
+    }
+    if (generatedDescription) {
+      pushDescriptionVersion(generatedDescription, localTitle, 'Przed regeneracją')
+    }
+    lastGeneratedKey.current = ''
+    setGenerationError(null)
+    setIsGeneratingDesc(false)
+    setGeneratedDescription(undefined)
+    setValidationOverride(false) // user może zmienić uzupełnienie między regeneracjami
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generatedDescription, localTitle])
 
   // ─── Navigate description versions (undo / redo) ───
   const navigateVersion = useCallback(
@@ -1627,8 +1881,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
   return (
     <>
-      <div className="grid grid-cols-[1fr_400px] gap-5">
-        {/* Lewa kolumna: workflow */}
+      <div>
+        {/* Workflow content (pełna szerokość — agent SDK chat usunięty) */}
         <div className="rounded-xl ring-1 ring-foreground/10 bg-card overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/30">
@@ -1643,12 +1897,25 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 <Badge variant="warning">ID: {editProductId}</Badge>
               )}
             </div>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <X className="size-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <TokenCostBadge productId={sheetProductId ?? editProductId ?? 'local'} />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowResetConfirm(true)}
+                className="gap-1.5 text-xs text-muted-foreground hover:text-destructive"
+                title="Skasuj cały dotychczasowy progres dla tego produktu"
+              >
+                <RefreshCw className="size-3.5" />
+                Zacznij od nowa
+              </Button>
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
           </div>
 
           {/* Step navigation */}
@@ -1699,30 +1966,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           </div>
         </div>
 
-        {/* Agent panel — persistent right sidebar across all steps (unified chat: Agent SDK) */}
-        <div className="sticky top-[4.5rem] self-start" style={{ height: 'calc(100vh - 5rem)' }}>
-          <AgentPanel
-            session={session}
-            imagesMeta={imagesMeta}
-            productId={sheetProductId ?? editProductId ?? 'local'}
-            onSessionPatch={(patch) => {
-              updateSession(patch).catch(() => {/* non-fatal */})
-            }}
-            onImagesAnalyzed={(meta) => {
-              setImagesMeta(meta)
-              updateSession({ imagesMeta: meta }).catch(() => {/* non-fatal */})
-            }}
-            onTitleGenerated={(title, candidates) => {
-              setLocalTitle(title)
-              setIsTitleGenerated(true)
-              setTitleCandidates(candidates)
-              updateSession({ generatedTitle: title, titleCandidates: candidates }).catch(() => {/* non-fatal */})
-            }}
-            onDescriptionGenerated={handleAgentDescriptionGenerated}
-            onAction={handleAgentAction}
-            className="h-full rounded-xl ring-1 ring-foreground/10 overflow-hidden"
-          />
-        </div>
       </div>
 
       {showApproval && session && (
@@ -1753,6 +1996,83 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
           }}
         />
       )}
+
+      {/* E6: Modal walidacji przed generacją opisu */}
+      <Dialog.Root open={showValidationModal} onOpenChange={setShowValidationModal}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-card p-6 shadow-xl">
+            <Dialog.Title className="text-base font-semibold">Wykryto braki przed generacją opisu</Dialog.Title>
+            <Dialog.Description className="mt-1.5 text-sm text-muted-foreground">
+              Bez tych danych opis może być niskiej jakości. Możesz wrócić i uzupełnić, albo wygenerować mimo to.
+            </Dialog.Description>
+
+            <ul className="mt-4 space-y-1.5 text-sm">
+              {!session?.allegroCategory?.id && (
+                <li className="flex items-start gap-2 text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                  Brak wybranej kategorii Allegro
+                </li>
+              )}
+              {Object.keys(localParameters).length === 0 && (
+                <li className="flex items-start gap-2 text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                  Brak uzupełnionych parametrów
+                </li>
+              )}
+              {(() => {
+                const missing = imagesMeta.filter(m => !m.removed && !(m.aiDescription || '').trim()).length
+                return missing > 0 ? (
+                  <li className="flex items-start gap-2 text-amber-600 dark:text-amber-400">
+                    <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                    {missing} {missing === 1 ? 'zdjęcie nie ma' : missing < 5 ? 'zdjęcia nie mają' : 'zdjęć nie ma'} opisu AI
+                  </li>
+                ) : null
+              })()}
+            </ul>
+
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowValidationModal(false)
+                  // Wróć do pierwszego brakującego kroku
+                  if (!session?.allegroCategory?.id) goToStep('category')
+                  else if (Object.keys(localParameters).length === 0) goToStep('fields-params')
+                  else goToStep('images')
+                }}
+              >
+                Wróć i uzupełnij
+              </Button>
+              <Button
+                onClick={() => {
+                  setValidationOverride(true)
+                  setShowValidationModal(false)
+                }}
+              >
+                Generuj mimo to
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* E4: Modal "Zacznij od nowa" — confirmation kasująca snapshot */}
+      <Dialog.Root open={showResetConfirm} onOpenChange={setShowResetConfirm}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-card p-6 shadow-xl">
+            <Dialog.Title className="text-base font-semibold">Zacząć od nowa?</Dialog.Title>
+            <Dialog.Description className="mt-1.5 text-sm text-muted-foreground">
+              Skasuje cały dotychczasowy progres dla tego produktu — kategorię, parametry, wygenerowany tytuł i opis, opisy zdjęć. Zdjęcia źródłowe wracają do oryginalnych z BL / scrape.
+            </Dialog.Description>
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={() => setShowResetConfirm(false)}>Anuluj</Button>
+              <Button variant="destructive" onClick={handleResetWorkflow}>Tak, zacznij od nowa</Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </>
   )
 }

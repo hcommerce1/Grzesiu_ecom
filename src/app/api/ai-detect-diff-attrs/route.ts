@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { parseClaudeJson } from '@/lib/parse-claude-json';
+import { logTokenUsage } from '@/lib/token-logger';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const MODEL = 'claude-sonnet-4-6';
 
 export interface DetectDiffAttrsResult {
   detectedAttrs: string[];
@@ -10,8 +13,9 @@ export interface DetectDiffAttrsResult {
 
 export async function POST(req: NextRequest) {
   try {
-    const { products } = (await req.json()) as {
+    const { products, sessionKey } = (await req.json()) as {
       products: { id: string; name: string }[];
+      sessionKey?: string;
     };
 
     if (!products?.length) {
@@ -29,7 +33,7 @@ export async function POST(req: NextRequest) {
       'Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown: { "detectedAttrs": ["Rozmiar", "Kolor"], "reasoning": "krótkie wyjaśnienie" }';
 
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: MODEL,
       max_tokens: 400,
       system: systemPrompt,
       messages: [
@@ -40,8 +44,16 @@ export async function POST(req: NextRequest) {
       ],
     });
 
+    logTokenUsage({
+      productId: '__global__',
+      sessionKey,
+      toolName: 'detect_diff_attrs',
+      model: MODEL,
+      usage: response.usage,
+    });
+
     const content = (response.content[0] as { type: 'text'; text: string }).text;
-    const parsed = JSON.parse(content) as DetectDiffAttrsResult;
+    const parsed = parseClaudeJson<DetectDiffAttrsResult>(content);
 
     return NextResponse.json({
       detectedAttrs: parsed.detectedAttrs ?? [],

@@ -8,7 +8,8 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { url, systemPrompt } = body;
+        const { url, systemPrompt, productId, sessionKey } = body;
+        const translateOpts = { productId, sessionKey };
 
         if (!url || typeof url !== 'string') {
             return NextResponse.json(
@@ -29,8 +30,8 @@ export async function POST(request: NextRequest) {
                 // Nowy flow: tłumaczenie bez generowania opisu (opis generowany osobno, później)
                 // Jeśli podano systemPrompt, użyj starego flow (fallback)
                 const translatedData = systemPrompt
-                    ? await translateProduct(result.data, systemPrompt)
-                    : await translateProductBasic(result.data);
+                    ? await translateProduct(result.data, systemPrompt, translateOpts)
+                    : await translateProductBasic(result.data, translateOpts);
                 return NextResponse.json({
                     success: true,
                     data: translatedData,

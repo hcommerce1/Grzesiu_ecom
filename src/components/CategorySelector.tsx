@@ -25,6 +25,7 @@ interface CategorySelectorProps {
   onReset?: () => void;
   selectedCategory?: AllegroCategory | null;
   productData?: ProductData | null;
+  productId?: string;
 }
 
 function parseCommission(commission: string | null | undefined): { pct: string; label: string } | null {
@@ -63,7 +64,7 @@ function CommissionBadge({ commission }: { commission: string | null | undefined
 // Module-level cache for suggestions so navigating away and back doesn't re-fetch
 const suggestionsCache = new Map<string, CategorySuggestion[]>();
 
-export function CategorySelector({ onSelect, onReset, selectedCategory, productData }: CategorySelectorProps) {
+export function CategorySelector({ onSelect, onReset, selectedCategory, productData, productId }: CategorySelectorProps) {
   // --- Shared state ---
   const [error, setError] = useState('');
   const [isDemo, setIsDemo] = useState(false);
@@ -137,6 +138,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
           productTitle: productData.title,
           productAttributes: productData.attributes,
           sourceCategory: productData.attributes?.['_sourceCategory'],
+          productId,
         }),
         signal: controller.signal,
       });

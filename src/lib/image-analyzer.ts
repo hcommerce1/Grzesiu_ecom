@@ -1,3 +1,5 @@
+import { parseClaudeJson } from './parse-claude-json';
+
 const VISION_MODEL = 'claude-sonnet-4-6';
 
 export interface ImageAnalysisResult {
@@ -56,28 +58,74 @@ Zwróć JSON:
   ]
 }`;
 
-type Base64Image = { media_type: string; data: string };
+type Base64Image = { ok: true; media_type: string; data: string };
+type FetchFailure = { ok: false; reason: string };
+type FetchResult = Base64Image | FetchFailure;
 
 const ALLOWED_MEDIA = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB — limit Anthropic
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 25000;
 
-async function fetchImageAsBase64(url: string): Promise<Base64Image | null> {
+function pickReferer(url: string): string | undefined {
+  try {
+    const host = new URL(url).hostname;
+    if (host.includes('allegroimg')) return 'https://allegro.pl/';
+    if (host.includes('amazon') || host.includes('media-amazon')) return 'https://www.amazon.com/';
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function describeFailure(reason: string, url: string): string {
+  const host = (() => { try { return new URL(url).hostname; } catch { return 'CDN'; } })();
+  const sourceHint = host.includes('amazon') ? 'Amazon' : host.includes('allegroimg') ? 'Allegro' : host;
+  if (reason === '404' || reason === '410') {
+    return `URL ${reason} — ${sourceHint} usunął ten obraz. Zrób re-scrape produktu.`;
+  }
+  if (reason === '403') {
+    return `Brak dostępu (403) z ${sourceHint} — być może wymagane logowanie / inny Referer.`;
+  }
+  if (/^5\d\d$/.test(reason)) {
+    return `Błąd serwera ${sourceHint} (${reason}). Spróbuj za chwilę.`;
+  }
+  if (reason === 'timeout') return `Timeout pobierania (>${FETCH_TIMEOUT_MS / 1000}s).`;
+  if (reason === 'empty') return 'Pusty plik — uszkodzony obraz po stronie CDN.';
+  if (reason === 'too-big') return `Obraz większy niż ${MAX_BYTES / 1024 / 1024} MB — limit Claude vision.`;
+  if (reason === 'bad-magic') return 'Plik nie jest obrazem (zły format lub HTML zamiast JPG).';
+  if (reason.startsWith('net:')) return `Błąd sieci: ${reason.slice(4)}.`;
+  return `Błąd pobrania (${reason}).`;
+}
+
+async function fetchImageAsBase64(url: string): Promise<FetchResult> {
+  const t0 = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const referer = pickReferer(url);
   try {
     const res = await fetch(url, {
       signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        ...(referer ? { Referer: referer } : {}),
       },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn('[fetchImageAsBase64] FAIL non-2xx', { url, status: res.status, ms: Date.now() - t0 });
+      return { ok: false, reason: String(res.status) };
+    }
 
     const ctRaw = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.byteLength === 0 || buf.byteLength > MAX_BYTES) return null;
+    if (buf.byteLength === 0) {
+      console.warn('[fetchImageAsBase64] FAIL empty', { url, ms: Date.now() - t0 });
+      return { ok: false, reason: 'empty' };
+    }
+    if (buf.byteLength > MAX_BYTES) {
+      console.warn('[fetchImageAsBase64] FAIL too big', { url, bytes: buf.byteLength, ms: Date.now() - t0 });
+      return { ok: false, reason: 'too-big' };
+    }
 
     let media_type = ctRaw;
     if (!ALLOWED_MEDIA.has(media_type)) {
@@ -86,12 +134,20 @@ async function fetchImageAsBase64(url: string): Promise<Base64Image | null> {
       else if (buf[0] === 0x89 && buf[1] === 0x50) media_type = 'image/png';
       else if (buf[0] === 0x47 && buf[1] === 0x49) media_type = 'image/gif';
       else if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57) media_type = 'image/webp';
-      else return null;
+      else {
+        console.warn('[fetchImageAsBase64] FAIL bad magic', { url, contentType: ctRaw, magic: buf.slice(0, 4).toString('hex'), ms: Date.now() - t0 });
+        return { ok: false, reason: 'bad-magic' };
+      }
     }
 
-    return { media_type, data: buf.toString('base64') };
-  } catch {
-    return null;
+    console.log('[fetchImageAsBase64] OK', { url, status: res.status, contentType: ctRaw, mediaType: media_type, bytes: buf.byteLength, ms: Date.now() - t0 });
+    return { ok: true, media_type, data: buf.toString('base64') };
+  } catch (e) {
+    const err = e as Error & { cause?: { code?: string } };
+    const isAbort = err.name === 'AbortError';
+    const reason = isAbort ? 'timeout' : `net:${err.cause?.code || err.message}`;
+    console.warn('[fetchImageAsBase64] FAIL exception', { url, error: err.message, code: err.cause?.code, ms: Date.now() - t0 });
+    return { ok: false, reason };
   } finally {
     clearTimeout(timer);
   }
@@ -129,19 +185,23 @@ export async function analyzeImages(
     const fetched = await Promise.all(batch.map(fetchImageAsBase64));
     const okIndices: number[] = [];
     const okImages: Base64Image[] = [];
+    const failureByIndex: Record<number, string> = {};
     for (let j = 0; j < batch.length; j++) {
-      if (fetched[j]) {
+      const r = fetched[j];
+      if (r.ok) {
         okIndices.push(j);
-        okImages.push(fetched[j]!);
+        okImages.push(r);
+      } else {
+        failureByIndex[j] = describeFailure(r.reason, batch[j]);
       }
     }
 
-    // Jeśli żaden obraz się nie pobrał — zapisz błędy i przejdź do następnego batcha
+    // Jeśli żaden obraz się nie pobrał — zapisz konkretny błąd per-URL i przejdź do następnego batcha
     if (!okImages.length) {
       for (let j = 0; j < batch.length; j++) {
         allResults.push({
           url: batch[j],
-          aiDescription: 'Błąd pobrania zdjęcia',
+          aiDescription: failureByIndex[j] ?? 'Błąd pobrania zdjęcia',
           aiConfidence: 0,
           isFeatureImage: false,
           features: [],
@@ -194,8 +254,7 @@ export async function analyzeImages(
     totalUsage.cache_creation_input_tokens = (totalUsage.cache_creation_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
     totalUsage.cache_read_input_tokens = (totalUsage.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
 
-    const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    const parsed = JSON.parse(cleaned);
+    const parsed = parseClaudeJson<{ results?: unknown[] }>(content);
     const results = parsed.results || [];
 
     // Zmapuj wyniki AI (indeksy odpowiadają okImages/okIndices) z powrotem do batcha.
@@ -205,7 +264,7 @@ export async function analyzeImages(
       if (okPos === -1) {
         allResults.push({
           url: batch[j],
-          aiDescription: 'Błąd pobrania zdjęcia',
+          aiDescription: failureByIndex[j] ?? 'Błąd pobrania zdjęcia',
           aiConfidence: 0,
           isFeatureImage: false,
           features: [],
@@ -215,13 +274,21 @@ export async function analyzeImages(
         });
         continue;
       }
-      const r = results[okPos] || {};
+      const r = (results[okPos] ?? {}) as {
+        description?: string;
+        confidence?: number;
+        isFeatureImage?: boolean;
+        features?: unknown;
+        labelText?: string;
+        variantHint?: string;
+        imageType?: ImageAnalysisResult['imageType'];
+      };
       allResults.push({
         url: batch[j],
         aiDescription: r.description || '',
         aiConfidence: typeof r.confidence === 'number' ? r.confidence : 0.5,
         isFeatureImage: r.isFeatureImage ?? false,
-        features: Array.isArray(r.features) ? r.features : [],
+        features: Array.isArray(r.features) ? (r.features as string[]) : [],
         labelText: r.labelText || '',
         variantHint: r.variantHint || '',
         imageType: r.imageType || '',

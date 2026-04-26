@@ -3,7 +3,8 @@
 import { useState, useRef, useEffect, useCallback } from "react"
 import { Bot, CheckCircle2, XCircle, Loader2, Send, Square } from "lucide-react"
 import { cn } from "@/lib/utils"
-import type { ProductSession, ImageMeta, DescriptionSection, ChatAction } from "@/lib/types"
+import type { ProductSession, ImageMeta, DescriptionSection, ChatAction, DescriptionInputSnapshot } from "@/lib/types"
+import type { Step } from "./BaselinkerWorkflowPanel"
 
 interface ToolStep {
   name: string
@@ -24,14 +25,35 @@ interface CategorySuggestion {
   commission: string | null
 }
 
+const STEP_LABEL_MAP: Record<Step, string> = {
+  inventory: "Magazyn",
+  category: "Kategoria",
+  images: "Zdjęcia",
+  "fields-params": "Parametry",
+  preview: "Podgląd",
+  approval: "Wyślij",
+}
+
+// Konkretne instrukcje per zakładka — zamiast vague "wykonaj odpowiednie działanie".
+// Cel: agent wie dokładnie który tool wywołać, bez halucynacji.
+const NOTE_BY_STEP: Record<Step, string> = {
+  inventory: "Powiedz krótkim zdaniem że user wybiera produkt z listy w UI, potem przejdzie na zakładkę Kategoria. Zakończ turę.",
+  category: "Wywołaj suggest_category teraz na podstawie tytułu i atrybutów produktu.",
+  images: "Wywołaj analyze_images z URL-ami zdjęć z sesji (state.session.data.images).",
+  "fields-params": "Jeśli params nie pobrane (state.allegroParams puste) → wywołaj fetch_category_parameters. W przeciwnym wypadku fill_parameters → validate_parameters.",
+  preview: "Jeśli tytuł nie wygenerowany → generate_title. Następnie generate_description. Jeśli oba już są — czekaj na komendy edycji od usera.",
+  approval: "Powiedz krótkim zdaniem że user klika Wyślij w UI. Zakończ turę.",
+}
+
 interface AgentPanelProps {
   session: ProductSession | null
   imagesMeta: ImageMeta[]
   productId: string
+  currentStep?: Step
   onSessionPatch: (patch: Partial<ProductSession>) => void
   onImagesAnalyzed: (meta: ImageMeta[]) => void
   onTitleGenerated: (title: string, candidates: string[]) => void
-  onDescriptionGenerated: (sections: DescriptionSection[], fullHtml: string) => void
+  onDescriptionGenerated: (sections: DescriptionSection[], fullHtml: string, inputSnapshot?: DescriptionInputSnapshot) => void
   onAction: (action: ChatAction) => void
   className?: string
 }
@@ -40,6 +62,7 @@ export function AgentPanel({
   session,
   imagesMeta,
   productId,
+  currentStep,
   onSessionPatch,
   onImagesAnalyzed,
   onTitleGenerated,
@@ -64,6 +87,16 @@ export function AgentPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const stepsEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const lastNotifiedStep = useRef<Step | undefined>(undefined)
+  const lastNotifiedCategoryId = useRef<string | undefined>(undefined)
+  // S: kolejka notyfikacji zamiast single string — szybkie klikanie nie nadpisuje starych.
+  // Q: dedupe identycznych — jeśli ten sam tekst już jest w kolejce, nie dodawaj.
+  const pendingNotifications = useRef<string[]>([])
+  const lastSentNote = useRef<string>('')
+  const notifyDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // N: hard-block przed równoczesnym start — `started` to React state (asynchroniczne),
+  // ten ref blokuje natychmiast (przed zaplanowanym setStarted).
+  const startInFlight = useRef(false)
 
   // Auto-scroll messages
   useEffect(() => {
@@ -72,12 +105,69 @@ export function AgentPanel({
 
   // Auto-start when product data arrives
   useEffect(() => {
-    if (!started && session?.data?.title) {
-      setStarted(true)
-      sendMessage("", "start")
-    }
+    if (started || startInFlight.current) return
+    if (!session?.data?.title) return
+    startInFlight.current = true
+    setStarted(true)
+    lastNotifiedStep.current = currentStep
+    lastNotifiedCategoryId.current = session?.allegroCategory?.id
+    sendMessage("", "start")
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.data?.title])
+
+  const enqueueNotification = (note: string) => {
+    if (note === lastSentNote.current) return // Q: identyczne ostatnio wysłane → skip
+    if (pendingNotifications.current[pendingNotifications.current.length - 1] === note) return
+    pendingNotifications.current.push(note)
+    if (notifyDebounce.current) clearTimeout(notifyDebounce.current)
+    notifyDebounce.current = setTimeout(() => {
+      notifyDebounce.current = null
+      flushNotifications()
+    }, 800) // Q: debounce 800ms — szybkie klikanie zlewa się w jedną notyfikację
+  }
+
+  const flushNotifications = () => {
+    if (isStreaming) return // czekamy aż useEffect na isStreaming odpali ponownie
+    if (pendingNotifications.current.length === 0) return
+    const combined = pendingNotifications.current.join('\n\n')
+    pendingNotifications.current = []
+    if (combined === lastSentNote.current) return
+    lastSentNote.current = combined
+    sendMessage(combined, "chat")
+  }
+
+  // Auto-notify agent gdy user zmieni zakładkę (po starcie)
+  useEffect(() => {
+    if (!started || !currentStep) return
+    if (lastNotifiedStep.current === currentStep) return
+    lastNotifiedStep.current = currentStep
+    enqueueNotification(`[SYSTEM] User przeszedł na zakładkę "${STEP_LABEL_MAP[currentStep]}". ${NOTE_BY_STEP[currentStep]}`)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep, started])
+
+  // Auto-notify agent gdy user (lub UI) zmieni kategorię
+  useEffect(() => {
+    if (!started) return
+    const cid = session?.allegroCategory?.id
+    if (!cid) return
+    if (lastNotifiedCategoryId.current === cid) return
+    lastNotifiedCategoryId.current = cid
+    const path = session?.allegroCategory?.path ?? ''
+    const name = session?.allegroCategory?.name ?? ''
+    enqueueNotification(`[SYSTEM] User wybrał kategorię Allegro: "${name}" (id=${cid}, ścieżka: ${path}). Jeśli jesteś na zakładce Parametry — wywołaj fetch_category_parameters z tym categoryId.`)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.allegroCategory?.id, started])
+
+  // Po zakończeniu streamingu — opróżnij kolejkę zaległych notyfikacji
+  useEffect(() => {
+    if (!isStreaming) {
+      startInFlight.current = false
+      // małe opóźnienie żeby React zdążył zaaplikować ostatnie SSE patche przed wysłaniem nowego POST
+      const t = setTimeout(() => flushNotifications(), 50)
+      return () => clearTimeout(t)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming])
 
   const sendMessage = useCallback(
     async (text: string, mode: "start" | "chat" = "chat", sessionOverride?: ProductSession) => {
@@ -96,6 +186,9 @@ export function AgentPanel({
         setCategoryGate(null)
         setManualCategoryQuery("")
         setManualCategoryResults(null)
+        setTotalCost(null)
+        setMessages([])
+        conversationHistory.current = []
       }
 
       setIsStreaming(true)
@@ -117,6 +210,7 @@ export function AgentPanel({
             imagesMeta,
             productId,
             sessionKey,
+            currentStep,
           }),
         })
 
@@ -214,7 +308,11 @@ export function AgentPanel({
                 break
 
               case "description_generated":
-                onDescriptionGenerated(event.sections as DescriptionSection[], event.fullHtml as string)
+                onDescriptionGenerated(
+                  event.sections as DescriptionSection[],
+                  event.fullHtml as string,
+                  event.inputSnapshot as DescriptionInputSnapshot | undefined,
+                )
                 break
 
               case "action":
@@ -311,7 +409,12 @@ export function AgentPanel({
       <div className="flex items-center justify-between px-3 py-2.5 border-b bg-violet-50 shrink-0">
         <div className="flex items-center gap-2">
           <Bot className="size-4 text-violet-600" />
-          <span className="text-sm font-semibold text-violet-800">Asystent Allegro</span>
+          <span className="text-sm font-semibold text-violet-800">Asystent</span>
+          {currentStep && (
+            <span className="text-[11px] px-1.5 py-0.5 rounded bg-violet-200 text-violet-900 font-medium">
+              {STEP_LABEL_MAP[currentStep]}
+            </span>
+          )}
         </div>
         {isStreaming && (
           <button

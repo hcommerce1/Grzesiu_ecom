@@ -165,6 +165,7 @@ export function CollapsibleProductItem({ item, index, onRemove }: Props) {
               )}
               {hasData && (
                 <BaselinkerWorkflowPanel
+                  key={item.id}
                   productData={item.product!}
                   onClose={() => setIsOpen(false)}
                 />

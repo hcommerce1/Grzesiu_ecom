@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import type { ImageGenProvider, ImageGenResult } from '@/lib/types';
+import type { ImageGenMode, ImageGenProvider, ImageGenResult } from '@/lib/types';
+import { uploadImage } from '@/lib/cloud-storage';
 
 // Env vars
 const FAL_KEY = process.env.FAL_KEY || '';
@@ -7,7 +8,7 @@ const REMOVEBG_API_KEY = process.env.REMOVEBG_API_KEY || '';
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN || '';
 
 // Konfigurowalne slugi modeli
-const FAL_MODEL_NANOBANANAPRO = process.env.FAL_MODEL_NANOBANANAPRO || 'fal-ai/nanobananapro';
+const FAL_MODEL_NANOBANANAPRO = process.env.FAL_MODEL_NANOBANANAPRO || 'fal-ai/nano-banana-pro';
 const FAL_MODEL_FLUXCONTEXTPRO = process.env.FAL_MODEL_FLUXCONTEXTPRO || 'fal-ai/flux-pro/v1.1-ultra';
 const REPLICATE_MODEL_VERSION =
   process.env.REPLICATE_MODEL_VERSION ||
@@ -20,6 +21,7 @@ interface RequestBody {
   prompt: string;
   sourceImageUrl?: string;
   provider: ImageGenProvider;
+  mode: ImageGenMode;
 }
 
 // ─── remove.bg ───
@@ -61,7 +63,7 @@ async function generateRemoveBg(sourceImageUrl: string): Promise<ImageGenResult>
     return { success: false, provider: 'removebg', error: 'Brak wyniku z Remove.bg' };
   }
 
-  return { success: true, provider: 'removebg', imageUrl: resultUrl, costEstimate: '~$0.20' };
+  return { success: true, provider: 'removebg', imageUrl: resultUrl, costEstimate: '~$0.20', costUsd: 0.20 };
 }
 
 // ─── Replicate (SDXL) ───
@@ -129,7 +131,7 @@ async function generateReplicate(prompt: string, sourceImageUrl?: string): Promi
       if (!outputUrl) {
         return { success: false, provider: 'replicate', error: 'Replicate zwrócił pusty wynik' };
       }
-      return { success: true, provider: 'replicate', imageUrl: outputUrl, costEstimate: '~$0.01' };
+      return { success: true, provider: 'replicate', imageUrl: outputUrl, costEstimate: '~$0.01', costUsd: 0.01 };
     }
 
     if (status.status === 'failed' || status.status === 'canceled') {
@@ -148,6 +150,7 @@ async function generateReplicate(prompt: string, sourceImageUrl?: string): Promi
 async function generateFal(
   prompt: string,
   modelSlug: string,
+  mode: ImageGenMode,
   sourceImageUrl?: string,
 ): Promise<ImageGenResult> {
   if (!FAL_KEY) {
@@ -156,18 +159,32 @@ async function generateFal(
 
   const providerName: ImageGenProvider = modelSlug.includes('flux') ? 'fluxcontextpro' : 'nanobananapro';
 
+  if (mode === 'edit' && !sourceImageUrl) {
+    return { success: false, provider: providerName, error: 'Tryb edycji wymaga zdjęcia źródłowego' };
+  }
+
   const body: Record<string, unknown> = {
     prompt,
     image_size: 'landscape_4_3',
     num_images: 1,
   };
 
+  // Gdy mamy source image, ZAWSZE używamy edit-endpointa (image-to-image) —
+  // niezależnie od trybu generate/edit. Tryb tylko zmienia jak Claude pisze prompt
+  // (reuse vs preserve), ale technicznie obie ścieżki to image-to-image w FAL.
+  // Tylko bez source w trybie generate idziemy text-to-image.
+  let effectiveSlug = modelSlug;
   if (sourceImageUrl) {
-    body.image_url = sourceImageUrl;
-    body.strength = 0.75;
+    if (modelSlug === 'fal-ai/nano-banana-pro') {
+      effectiveSlug = 'fal-ai/nano-banana-pro/edit';
+      body.image_urls = [sourceImageUrl];
+    } else {
+      body.image_url = sourceImageUrl;
+      body.strength = 0.75;
+    }
   }
 
-  const response = await fetch(`https://fal.run/${modelSlug}`, {
+  const response = await fetch(`https://fal.run/${effectiveSlug}`, {
     method: 'POST',
     headers: {
       Authorization: `Key ${FAL_KEY}`,
@@ -188,14 +205,39 @@ async function generateFal(
     return { success: false, provider: providerName, error: 'fal.ai zwrócił pusty wynik' };
   }
 
-  const cost = providerName === 'fluxcontextpro' ? '~$0.05' : '~$0.03';
-  return { success: true, provider: providerName, imageUrl, costEstimate: cost };
+  const costUsd = providerName === 'fluxcontextpro' ? 0.05 : 0.03;
+  const cost = `~$${costUsd.toFixed(2)}`;
+  return { success: true, provider: providerName, imageUrl, costEstimate: cost, costUsd };
+}
+
+// Pobiera wygenerowane zdjęcie (URL lub data:base64) i upload-uje na nasz storage.
+// Reuse: uploadImage z cloud-storage.ts ma już logikę 'auto' (R2 → Cloudinary fallback).
+async function persistGeneratedImage(rawUrl: string, provider: ImageGenProvider): Promise<string> {
+  let buffer: Buffer;
+  let contentType = 'image/png';
+
+  if (rawUrl.startsWith('data:')) {
+    // data:image/png;base64,XXXX
+    const match = rawUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) throw new Error('Niepoprawny format data URI');
+    contentType = match[1];
+    buffer = Buffer.from(match[2], 'base64');
+  } else {
+    const res = await fetch(rawUrl);
+    if (!res.ok) throw new Error(`Pobranie wyniku ${provider} nie powiodło się: ${res.status}`);
+    contentType = res.headers.get('content-type') || 'image/png';
+    buffer = Buffer.from(await res.arrayBuffer());
+  }
+
+  const ext = contentType.includes('png') ? 'png' : contentType.includes('jpeg') ? 'jpg' : contentType.includes('webp') ? 'webp' : 'png';
+  const upload = await uploadImage(buffer, `ai-${provider}-${Date.now()}.${ext}`, contentType, 'auto');
+  return upload.url;
 }
 
 // ─── Main handler ───
 export async function POST(req: Request) {
   try {
-    const { prompt, sourceImageUrl, provider } = (await req.json()) as RequestBody;
+    const { prompt, sourceImageUrl, provider, mode } = (await req.json()) as RequestBody;
 
     if (!prompt?.trim() && provider !== 'removebg') {
       return NextResponse.json(
@@ -204,6 +246,14 @@ export async function POST(req: Request) {
       );
     }
 
+    if (!mode) {
+      return NextResponse.json(
+        { success: false, provider, error: 'Brak trybu (generate/edit)' } satisfies ImageGenResult,
+        { status: 400 },
+      );
+    }
+
+    const effectiveMode: ImageGenMode = provider === 'removebg' ? 'edit' : mode;
     let result: ImageGenResult;
 
     switch (provider) {
@@ -216,15 +266,27 @@ export async function POST(req: Request) {
         break;
 
       case 'nanobananapro':
-        result = await generateFal(prompt, FAL_MODEL_NANOBANANAPRO, sourceImageUrl);
+        result = await generateFal(prompt, FAL_MODEL_NANOBANANAPRO, effectiveMode, sourceImageUrl);
         break;
 
       case 'fluxcontextpro':
-        result = await generateFal(prompt, FAL_MODEL_FLUXCONTEXTPRO, sourceImageUrl);
+        result = await generateFal(prompt, FAL_MODEL_FLUXCONTEXTPRO, effectiveMode, sourceImageUrl);
         break;
 
       default:
         result = { success: false, provider: provider || 'nanobananapro', error: `Nieznany provider: ${provider}` };
+    }
+
+    // Persist wynik na nasz storage (R2 → Cloudinary fallback) — FAL.media wygasa po godzinach,
+    // base64 jest długi i niewygodny do wysyłki BL. Po uploadzie zwracamy trwały URL.
+    if (result.success && result.imageUrl) {
+      try {
+        const persistent = await persistGeneratedImage(result.imageUrl, provider);
+        result = { ...result, imageUrl: persistent };
+      } catch (err) {
+        console.error('[generate] Persist upload failed, returning original URL:', err);
+        // Nie blokujemy — user dostaje surowy URL z FAL/etc, lepsze to niż nic
+      }
     }
 
     return NextResponse.json(result, { status: result.success ? 200 : 500 });

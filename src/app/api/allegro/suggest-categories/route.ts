@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { searchCategories, getCommissionInfo } from '@/lib/allegro';
+import { logTokenUsage } from '@/lib/token-logger';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const MODEL = 'claude-haiku-4-5-20251001';
 
 interface SuggestRequest {
   productTitle: string;
   productAttributes?: Record<string, string>;
   sourceCategory?: string;
+  productId?: string;
 }
 
 export async function POST(req: Request) {
@@ -39,9 +42,16 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 {"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}`;
 
     const llmRes = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODEL,
       max_tokens: 500,
       messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    logTokenUsage({
+      productId: body.productId ?? '__global__',
+      toolName: 'suggest_categories',
+      model: MODEL,
+      usage: llmRes.usage,
     });
 
     const content = (llmRes.content[0] as { type: 'text'; text: string }).text ?? '{}';

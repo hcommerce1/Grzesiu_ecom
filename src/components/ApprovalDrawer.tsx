@@ -72,7 +72,7 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
 
           {/* Summary grid */}
           <div className="grid grid-cols-3 gap-3">
-            <StatCard label="Tryb" value={{ new: 'Nowy produkt', edit: 'Edycja', variant: 'Wariant', bundle: 'Bundle' }[session.mode]} />
+            <StatCard label="Tryb" value={{ new: 'Nowy produkt', edit: 'Edycja', variant: 'Wariant', bundle: 'Edycja' }[session.mode]} />
             <StatCard label="Zdjęcia" value={`${images.length}`} sub="plików" />
             <StatCard label="VAT" value={`${session.tax_rate ?? 23}%`} />
           </div>
@@ -120,33 +120,47 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
             </Section>
           )}
 
-          {/* Parameters */}
+          {/* Parameters — tłumacz paramID i option_id na nazwy/wartości po polsku */}
           {session.filledParameters && Object.keys(session.filledParameters).length > 0 && (
             <Section title="Parametry Allegro">
-              {Object.entries(session.filledParameters).map(([key, val]) => (
-                <Row key={key} label={key} value={Array.isArray(val) ? val.join(', ') : val} />
-              ))}
+              {Object.entries(session.filledParameters).map(([paramId, val]) => {
+                const def = session.allegroParameters?.find(p => p.id === paramId);
+                const label = def?.name ?? paramId;
+                const rawOpts = def?.dictionary ?? (Array.isArray(def?.options) ? def?.options : null) ?? def?.restrictions?.allowedValues ?? [];
+                const opts = Array.isArray(rawOpts) ? rawOpts : [];
+                const translate = (v: string) => opts.find(o => o.id === v)?.value ?? v;
+                const display = Array.isArray(val) ? val.map(translate).join(', ') : translate(String(val));
+                return <Row key={paramId} label={label} value={display} />;
+              })}
             </Section>
           )}
 
-          {/* Description */}
-          {sel['description'] !== false && session.data?.description && (
-            <Section title="Opis">
-              <div>
-                <div className={`text-sm text-muted-foreground ${descExpanded ? '' : 'line-clamp-3'}`}
-                  dangerouslySetInnerHTML={{ __html: session.data.description.substring(0, 500) + (session.data.description.length > 500 ? '…' : '') }}
-                />
-                {session.data.description.length > 200 && (
-                  <button
-                    onClick={() => setDescExpanded(!descExpanded)}
-                    className="flex items-center gap-1 text-xs text-accent mt-1.5 hover:underline"
-                  >
-                    {descExpanded ? <><ChevronUp className="w-3 h-3" />Zwiń</> : <><ChevronDown className="w-3 h-3" />Rozwiń</>}
-                  </button>
-                )}
-              </div>
-            </Section>
-          )}
+          {/* Description — preferuj wygenerowany strukturalny opis nad surowym scrape'em */}
+          {sel['description'] !== false && (() => {
+            const descSource = session.generatedDescription?.fullHtml || session.data?.description || ''
+            if (!descSource) return null
+            const descBody = descExpanded
+              ? descSource
+              : descSource.substring(0, 500) + (descSource.length > 500 ? '…' : '')
+            return (
+              <Section title="Opis">
+                <div>
+                  <div
+                    className={`text-sm text-muted-foreground ${descExpanded ? '' : 'line-clamp-3'}`}
+                    dangerouslySetInnerHTML={{ __html: descBody }}
+                  />
+                  {descSource.length > 200 && (
+                    <button
+                      onClick={() => setDescExpanded(!descExpanded)}
+                      className="flex items-center gap-1 text-xs text-accent mt-1.5 hover:underline"
+                    >
+                      {descExpanded ? <><ChevronUp className="w-3 h-3" />Zwiń</> : <><ChevronDown className="w-3 h-3" />Rozwiń</>}
+                    </button>
+                  )}
+                </div>
+              </Section>
+            )
+          })()}
 
           {/* Inventory */}
           <Section title="Magazyn">

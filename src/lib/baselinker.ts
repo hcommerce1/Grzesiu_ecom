@@ -111,6 +111,31 @@ export async function addInventoryProduct(params: Record<string, unknown>) {
   return callBaselinker<{ product_id: number }>('addInventoryProduct', params);
 }
 
+export async function getInventoryCategories(inventoryId: number) {
+  const res = await callBaselinker<{ categories: Array<{ category_id: number; name: string; parent_id: number }> }>(
+    'getInventoryCategories',
+    { inventory_id: inventoryId },
+  );
+  return res.categories ?? [];
+}
+
+export async function addInventoryCategory(params: {
+  inventory_id: number;
+  name: string;
+  parent_id: number;
+  category_id?: number;
+}) {
+  return callBaselinker<{ category_id: number }>('addInventoryCategory', params);
+}
+
+export async function addInventoryManufacturer(params: {
+  inventory_id?: number;
+  manufacturer_name: string;
+  manufacturer_id?: number;
+}) {
+  return callBaselinker<{ manufacturer_id: number }>('addInventoryManufacturer', params);
+}
+
 export async function getInventoryProductsData(productIds: string[], inventoryId: number, priority: Priority = 'normal') {
   return callBaselinker('getInventoryProductsData', {
     inventory_id: inventoryId,

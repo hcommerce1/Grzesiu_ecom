@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/product-session';
 import { buildBaselinkerPayload } from '@/lib/product-session';
 import { addInventoryProduct, getInventoryProductsData } from '@/lib/baselinker';
+import { resolveCategoryId, resolveManufacturerId, clearCache } from '@/lib/baselinker-resolver';
 import {
   invalidateProductDetails,
   setCachedProductDetails,
@@ -21,7 +22,39 @@ export async function POST() {
 
   try {
     const payload = buildBaselinkerPayload(session);
-    const result = await addInventoryProduct(payload);
+
+    // Pre-resolve: Allegro category name → BL category_id (auto-create gdy brak w BL).
+    if (session.allegroCategory?.name) {
+      payload.category_id = await resolveCategoryId(session.allegroCategory.name, session.inventoryId);
+    }
+
+    // Pre-resolve: jeśli user wpisał nazwę producenta zamiast ID, utwórz/znajdź w BL.
+    const rawManufacturer = session.editableFieldValues?.manufacturer_id;
+    if (rawManufacturer && isNaN(parseInt(rawManufacturer, 10))) {
+      payload.manufacturer_id = await resolveManufacturerId(rawManufacturer, session.inventoryId);
+    }
+
+    let result: { product_id: number };
+    try {
+      result = await addInventoryProduct(payload);
+    } catch (err) {
+      // Defense-in-depth: jeśli cache był stale i BL nadal mówi że category/manufacturer nie istnieje,
+      // wyczyść cache, ponów resolver i retry raz.
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('ERROR_CATEGORY_ID') || message.includes('ERROR_MANUFACTURER_ID')) {
+        clearCache();
+        if (session.allegroCategory?.name) {
+          payload.category_id = await resolveCategoryId(session.allegroCategory.name, session.inventoryId);
+        }
+        if (rawManufacturer && isNaN(parseInt(rawManufacturer, 10))) {
+          payload.manufacturer_id = await resolveManufacturerId(rawManufacturer, session.inventoryId);
+        }
+        result = await addInventoryProduct(payload);
+      } else {
+        throw err;
+      }
+    }
+
     const productId = String(result.product_id);
 
     // Invalidate caches so the list shows the new product

@@ -18,7 +18,6 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import type { ImageMeta } from "@/lib/types"
 import { ImageGenerationPanel } from "@/components/ImageGenerationPanel"
 import { cn } from "@/lib/utils"
@@ -27,11 +26,12 @@ interface Props {
   images: string[]
   imagesMeta: ImageMeta[]
   onImagesMetaChange: (meta: ImageMeta[]) => void
+  productId?: string
+  /** Tryb edit — produkt już ma zdjęcia w BL. Ukrywamy upload i provider select. */
+  allowUpload?: boolean
 }
 
-type UploadProvider = "auto" | "r2" | "cloudinary"
-
-export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: Props) {
+export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange, productId, allowUpload = true }: Props) {
   const [showGenPanel, setShowGenPanel] = useState(false)
   const [analyzingAll, setAnalyzingAll] = useState(false)
   const [analyzingUrls, setAnalyzingUrls] = useState<Set<string>>(new Set())
@@ -41,19 +41,10 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState("")
   const [uploadError, setUploadError] = useState("")
-  const [provider, setProvider] = useState<UploadProvider>("auto")
-  const [providerStatus, setProviderStatus] = useState<{ r2: boolean; cloudinary: boolean } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Ref for current meta to avoid stale closure
   const metaRef = useRef<ImageMeta[]>([])
-
-  useEffect(() => {
-    fetch("/api/images/upload/status")
-      .then(r => r.json())
-      .then(data => setProviderStatus(data))
-      .catch(() => setProviderStatus({ r2: false, cloudinary: false }))
-  }, [])
 
   // Initialize meta if empty
   const meta: ImageMeta[] = imagesMeta.length > 0
@@ -69,8 +60,10 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
         features: [],
       }))
 
-  // Keep ref in sync
-  metaRef.current = meta
+  // Keep ref in sync — useEffect zamiast inline assignment (eliminuje stale ref w concurrent rendering)
+  useEffect(() => {
+    metaRef.current = meta
+  }, [meta])
 
   const activeImages = meta.filter(m => !m.removed)
   const removedImages = meta.filter(m => m.removed)
@@ -159,10 +152,9 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
     onImagesMetaChange([...updated, ...removedImages])
   }
 
-  const handleFileUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files
-      if (!files || files.length === 0) return
+  const uploadFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return
 
       setUploading(true)
       setUploadError("")
@@ -170,10 +162,10 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
 
       try {
         const formData = new FormData()
-        for (let i = 0; i < files.length; i++) {
-          formData.append("files", files[i])
+        for (const f of files) {
+          formData.append("files", f)
         }
-        formData.append("provider", provider)
+        formData.append("provider", "auto")
 
         const res = await fetch("/api/images/upload", {
           method: "POST",
@@ -217,85 +209,41 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
         if (fileInputRef.current) fileInputRef.current.value = ""
       }
     },
-    [provider, onImagesMetaChange],
+    [onImagesMetaChange],
   )
 
+  const handleFileUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files
+      if (!files || files.length === 0) return
+      uploadFiles(Array.from(files))
+    },
+    [uploadFiles],
+  )
+
+  // Drag-and-drop upload — tylko gdy allowUpload (ukryty w trybie edit)
+  const [dragOver, setDragOver] = useState(false)
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!allowUpload) return
+    if (e.dataTransfer.types.includes("Files")) {
+      e.preventDefault()
+      setDragOver(true)
+    }
+  }, [allowUpload])
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Tylko gdy kursor opuszcza container, nie children
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return
+    setDragOver(false)
+  }, [])
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    if (!allowUpload) return
+    e.preventDefault()
+    setDragOver(false)
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith("image/"))
+    if (files.length > 0) uploadFiles(files)
+  }, [allowUpload, uploadFiles])
+
   const hasAnyAnalysis = activeImages.some(m => m.aiDescription)
-
-  // ─── Image card ───
-  function ImageCard({ img }: { img: ImageMeta }) {
-    const isAnalyzing = analyzingUrls.has(img.url)
-
-    return (
-      <Reorder.Item
-        key={img.url}
-        value={img}
-        className="flex gap-4 rounded-xl border border-border bg-card p-3 shadow-sm"
-      >
-        <div className="flex flex-col items-center justify-center cursor-grab active:cursor-grabbing">
-          <GripVertical className="size-4 text-muted-foreground" />
-          <span className="text-[10px] text-muted-foreground mt-0.5">{img.order + 1}</span>
-        </div>
-
-        <div className="relative flex-shrink-0">
-          <img
-            src={img.url}
-            alt=""
-            className="w-36 h-28 object-cover rounded-lg border border-border"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-          />
-          {img.isFeatureImage && (
-            <Star className="absolute -top-1 -right-1 size-3.5 text-amber-500 fill-amber-500" />
-          )}
-          {img.uploadedVia && (
-            <div className="absolute -bottom-1 -right-1">
-              <Badge variant="secondary" className="text-[8px] px-1 py-0 gap-0.5">
-                <Cloud className="size-2" />
-                {img.uploadedVia === 'r2' ? 'R2' : 'CLD'}
-              </Badge>
-            </div>
-          )}
-        </div>
-
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="flex items-center gap-1 flex-wrap">
-            {isAnalyzing && <Badge variant="secondary" className="text-[10px] gap-0.5"><Loader2 className="size-2.5 animate-spin" />Analiza...</Badge>}
-            {!isAnalyzing && img.aiConfidence > 0 && (
-              <Badge variant={img.aiConfidence >= 0.7 ? "default" : "secondary"} className="text-[10px]">
-                {img.isFeatureImage ? "Cechy" : "Zdjęcie"} ({Math.round(img.aiConfidence * 100)}%)
-              </Badge>
-            )}
-            {img.features.slice(0, 3).map(f => <Badge key={f} variant="outline" className="text-[10px]">{f}</Badge>)}
-          </div>
-          <textarea
-            value={img.userDescription || img.aiDescription}
-            onChange={(e) => handleDescriptionChange(img.url, e.target.value)}
-            placeholder={isAnalyzing ? "Analizuję..." : "Opisz zdjęcie..."}
-            rows={3}
-            className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/20"
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <button
-            onClick={() => analyzeImages([img.url])}
-            disabled={isAnalyzing}
-            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-            title={img.aiDescription ? "Analizuj ponownie" : "Analizuj"}
-          >
-            {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-          </button>
-          <button
-            onClick={() => handleRemove(img.url)}
-            className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-            title="Usuń"
-          >
-            <Trash2 className="size-4" />
-          </button>
-        </div>
-      </Reorder.Item>
-    )
-  }
 
   return (
     <div className="space-y-3">
@@ -311,24 +259,15 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {/* Provider selector */}
-            <Select value={provider} onValueChange={(v) => setProvider(v as UploadProvider)}>
-              <SelectTrigger className="h-8 w-[130px] text-xs">
-                <Cloud className="size-3 mr-1 shrink-0 opacity-60" />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">Auto</SelectItem>
-                <SelectItem value="r2" disabled={providerStatus !== null && !providerStatus.r2}>R2</SelectItem>
-                <SelectItem value="cloudinary" disabled={providerStatus !== null && !providerStatus.cloudinary}>Cloudinary</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={handleFileUpload} className="hidden" />
-            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading} size="sm" variant="outline" className="gap-1.5">
-              {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
-              {uploading ? uploadProgress : "Dodaj"}
-            </Button>
+            {allowUpload && (
+              <>
+                <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={handleFileUpload} className="hidden" />
+                <Button onClick={() => fileInputRef.current?.click()} disabled={uploading} size="sm" variant="outline" className="gap-1.5">
+                  {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+                  {uploading ? uploadProgress : "Dodaj"}
+                </Button>
+              </>
+            )}
 
             <Button onClick={handleAnalyzeAll} disabled={analyzingAll || activeImages.length === 0} size="sm" className="gap-1.5">
               {analyzingAll ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
@@ -365,11 +304,14 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
           <div className="border-t border-border">
             <ImageGenerationPanel
               activeImages={activeImages}
+              productId={productId}
               onAddImage={(url) => {
                 const current = metaRef.current
                 const maxOrder = current.length > 0 ? Math.max(...current.map(m => m.order)) : -1
                 const newImage: ImageMeta = { url, order: maxOrder + 1, removed: false, aiDescription: "", aiConfidence: 0, userDescription: "", isFeatureImage: false, features: [] }
                 onImagesMetaChange([...current, newImage])
+                // Auto-analiza po dodaniu — Claude opisuje nowo wygenerowane zdjęcie w tle
+                analyzeImages([url])
               }}
               onReplaceImage={(oldUrl, newUrl) => {
                 updateMeta(prev => prev.map(m => (m.url === oldUrl ? { ...m, url: newUrl } : m)))
@@ -386,12 +328,96 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange }: 
         <div className="flex-1 h-px bg-border" />
       </div>
 
-      {/* Scrollable images container */}
-      <div>
+      {/* Scrollable images container — drop zone for drag-and-drop upload */}
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={cn(
+          "relative rounded-xl transition-colors",
+          dragOver && allowUpload && "ring-2 ring-primary border-dashed",
+        )}
+      >
+        {dragOver && allowUpload && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-primary/10 backdrop-blur-sm">
+            <div className="rounded-lg bg-card border border-primary px-4 py-3 text-sm font-medium text-primary shadow-lg">
+              Upuść zdjęcia tutaj
+            </div>
+          </div>
+        )}
         <Reorder.Group axis="y" values={activeImages} onReorder={handleReorder} className="space-y-2">
-          {activeImages.map((img) => (
-            <ImageCard key={img.url} img={img} />
-          ))}
+          {activeImages.map((img) => {
+            const isAnalyzing = analyzingUrls.has(img.url)
+            return (
+              <Reorder.Item
+                key={img.url}
+                value={img}
+                className="flex gap-4 rounded-xl border border-border bg-card p-3 shadow-sm"
+              >
+                <div className="flex flex-col items-center justify-center cursor-grab active:cursor-grabbing">
+                  <GripVertical className="size-4 text-muted-foreground" />
+                  <span className="text-[10px] text-muted-foreground mt-0.5">{img.order + 1}</span>
+                </div>
+
+                <div className="relative flex-shrink-0">
+                  <img
+                    src={img.url}
+                    alt=""
+                    className="w-36 h-28 object-cover rounded-lg border border-border"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
+                  />
+                  {img.isFeatureImage && (
+                    <Star className="absolute -top-1 -right-1 size-3.5 text-amber-500 fill-amber-500" />
+                  )}
+                  {img.uploadedVia && (
+                    <div className="absolute -bottom-1 -right-1">
+                      <Badge variant="secondary" className="text-[8px] px-1 py-0 gap-0.5">
+                        <Cloud className="size-2" />
+                        {img.uploadedVia === 'r2' ? 'R2' : 'CLD'}
+                      </Badge>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {isAnalyzing && <Badge variant="secondary" className="text-[10px] gap-0.5"><Loader2 className="size-2.5 animate-spin" />Analiza...</Badge>}
+                    {!isAnalyzing && img.aiConfidence > 0 && (
+                      <Badge variant={img.aiConfidence >= 0.7 ? "default" : "secondary"} className="text-[10px]">
+                        {img.isFeatureImage ? "Cechy" : "Zdjęcie"} ({Math.round(img.aiConfidence * 100)}%)
+                      </Badge>
+                    )}
+                    {img.features.slice(0, 3).map(f => <Badge key={f} variant="outline" className="text-[10px]">{f}</Badge>)}
+                  </div>
+                  <textarea
+                    value={img.userDescription || img.aiDescription}
+                    onChange={(e) => handleDescriptionChange(img.url, e.target.value)}
+                    placeholder={isAnalyzing ? "Analizuję..." : "Opisz zdjęcie..."}
+                    rows={3}
+                    className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/20"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <button
+                    onClick={() => analyzeImages([img.url])}
+                    disabled={isAnalyzing}
+                    className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                    title={img.aiDescription ? "Analizuj ponownie" : "Analizuj"}
+                  >
+                    {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                  </button>
+                  <button
+                    onClick={() => handleRemove(img.url)}
+                    className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                    title="Usuń"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+              </Reorder.Item>
+            )
+          })}
         </Reorder.Group>
       </div>
 

@@ -1,7 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { ProductData } from './types';
+import { logTokenUsage } from './token-logger';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const TRANSLATOR_MODEL = 'claude-haiku-4-5-20251001';
 
 interface TranslationResult {
     title: string;
@@ -9,12 +11,25 @@ interface TranslationResult {
     attributes: Record<string, string>;
 }
 
-async function callLLM(systemPrompt: string, userContent: string): Promise<string> {
+export interface TranslateOpts {
+    productId?: string;
+    sessionKey?: string;
+}
+
+async function callLLM(systemPrompt: string, userContent: string, opts?: TranslateOpts): Promise<string> {
     const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: TRANSLATOR_MODEL,
         max_tokens: 4096,
         system: systemPrompt,
         messages: [{ role: 'user', content: userContent }],
+    });
+
+    logTokenUsage({
+        productId: opts?.productId ?? '__global__',
+        sessionKey: opts?.sessionKey,
+        toolName: 'translate',
+        model: TRANSLATOR_MODEL,
+        usage: response.usage,
     });
 
     const text = (response.content[0] as { type: 'text'; text: string }).text || '';
@@ -26,7 +41,7 @@ async function callLLM(systemPrompt: string, userContent: string): Promise<strin
  * Tlumaczy tylko tytul i atrybuty (BEZ generowania opisu).
  * Uzyj tego w nowym flow, gdzie opis generowany jest osobno.
  */
-export async function translateProductBasic(product: ProductData): Promise<ProductData> {
+export async function translateProductBasic(product: ProductData, opts?: TranslateOpts): Promise<ProductData> {
     const basicPrompt = `Na podstawie poniższych danych produktu:
 1. Przetłumacz tytuł produktu na polski (naturalnie brzmiące tłumaczenie, NIE tytuł aukcji Allegro)
 2. Przetłumacz wszystkie atrybuty (klucze i wartości) na polski
@@ -51,6 +66,7 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
         const responseText = await callLLM(
             basicPrompt,
             `Przetłumacz poniższe dane produktu na polski:\n\n${JSON.stringify(payload, null, 2)}`,
+            opts,
         );
         const translated: TranslationResult = JSON.parse(responseText);
 
@@ -69,7 +85,7 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 /**
  * Pelne tlumaczenie + generowanie opisu sprzedazowego (stary flow, fallback).
  */
-export async function translateProduct(product: ProductData, customPrompt?: string): Promise<ProductData> {
+export async function translateProduct(product: ProductData, customPrompt?: string, opts?: TranslateOpts): Promise<ProductData> {
     const defaultPrompt = `Na podstawie poniższego opisu producenta stwórz profesjonalny tytuł aukcji Allegro oraz skuteczny, sprzedażowy opis produktu. Oferta będzie wystawiona na polskim Allegro.
 
 ### Tytuł Allegro:
@@ -184,6 +200,7 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
         const responseText = await callLLM(
             finalPrompt,
             `${userInstruction}\n\n${JSON.stringify(payload, null, 2)}`,
+            opts,
         );
         const translated: TranslationResult = JSON.parse(responseText);
 

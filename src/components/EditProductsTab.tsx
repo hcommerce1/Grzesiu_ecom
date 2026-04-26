@@ -22,6 +22,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { useEditProgressStore } from "@/lib/stores/edit-progress-store"
 import { PaginationControls } from "@/components/ui/pagination"
 import {
   Select,
@@ -353,6 +354,27 @@ export function EditProductsTab() {
             }
           }
 
+          // Prefill editableFieldValues z BL — żeby workflow nie pokazywał zer dla istniejących produktów.
+          // Bierzemy pierwszą wartość z map prices/stock (są keyed by price-group/warehouse).
+          const editPrefill: Record<string, string> = {}
+          if (productData.prices && typeof productData.prices === 'object') {
+            const firstPrice = Object.values(productData.prices as Record<string, unknown>).find(v => v != null)
+            if (firstPrice != null) editPrefill['prices'] = String(firstPrice)
+          }
+          if (productData.stock && typeof productData.stock === 'object') {
+            const firstStock = Object.values(productData.stock as Record<string, unknown>).find(v => v != null)
+            if (firstStock != null) editPrefill['stock'] = String(firstStock)
+          }
+          if (productData.manufacturer_id != null && productData.manufacturer_id !== 0 && productData.manufacturer_id !== '') {
+            editPrefill['manufacturer_id'] = String(productData.manufacturer_id)
+          }
+          if (productData.weight != null) editPrefill['weight'] = String(productData.weight)
+          if (productData.height != null) editPrefill['height'] = String(productData.height)
+          if (productData.width != null) editPrefill['width'] = String(productData.width)
+          if (productData.length != null) editPrefill['length'] = String(productData.length)
+          if (productData.sku) editPrefill['sku'] = String(productData.sku)
+          if (productData.ean) editPrefill['ean'] = String(productData.ean)
+
           setBatchProductData({
             title: productData.name ?? "",
             images,
@@ -365,6 +387,7 @@ export function EditProductsTab() {
             bundleProducts,
             taxRate: productData.tax_rate ?? 23,
             bundleContextText,
+            editPrefill,
           })
         } else {
           const listItem = productsRef.current.find((p) => p.id === currentBatchId)
@@ -797,7 +820,6 @@ export function EditProductsTab() {
               <SelectItem value="basic">Produkt podstawowy</SelectItem>
               <SelectItem value="parent">Parent</SelectItem>
               <SelectItem value="variant">Wariant</SelectItem>
-              <SelectItem value="bundle">Zestaw</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1158,6 +1180,7 @@ interface ProductRowProps {
 }
 
 const ProductRow = memo(function ProductRow({ product, isSelected, onToggle, onDirectEdit }: ProductRowProps) {
+  const inProgress = useEditProgressStore((s) => Boolean(s.entries[product.id]))
   return (
     <tr
       onClick={onDirectEdit ?? onToggle}
@@ -1187,7 +1210,12 @@ const ProductRow = memo(function ProductRow({ product, isSelected, onToggle, onD
         )}
       </td>
       <td className="px-3 py-2 font-medium max-w-[280px]">
-        <p className="truncate" title={product.name}>{product.name || "—"}</p>
+        <div className="flex items-center gap-2">
+          <p className="truncate" title={product.name}>{product.name || "—"}</p>
+          {inProgress && (
+            <Badge variant="warning" className="text-[10px] shrink-0">W trakcie edycji</Badge>
+          )}
+        </div>
         <span className="text-[11px] text-muted-foreground">ID: {product.id}</span>
       </td>
       <td className="px-3 py-2 font-mono text-xs text-muted-foreground">

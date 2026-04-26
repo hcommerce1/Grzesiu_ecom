@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { parseClaudeJson } from '@/lib/parse-claude-json';
+import { logTokenUsage } from '@/lib/token-logger';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -20,10 +22,11 @@ interface InputProduct {
 
 export async function POST(req: NextRequest) {
   try {
-    const { products, diffFields, templateTitle } = (await req.json()) as {
+    const { products, diffFields, templateTitle, sessionKey } = (await req.json()) as {
       products: InputProduct[];
       diffFields: string[];
       templateTitle?: string;
+      sessionKey?: string;
     };
 
     if (!products?.length || !diffFields?.length) {
@@ -89,10 +92,17 @@ ${productList}`;
       messages: [{ role: 'user', content: userPrompt }],
     });
 
+    logTokenUsage({
+      productId: '__global__',
+      sessionKey,
+      toolName: 'extract_variants',
+      model: MODEL,
+      usage: response.usage,
+    });
+
     const content = (response.content[0] as { type: 'text'; text: string }).text || '{}';
-    const parsed = JSON.parse(content);
-    const aiResults: Array<{ id: string; values: Record<string, string>; confidence: number; missing: string[] }> =
-      parsed.results || [];
+    const parsed = parseClaudeJson<{ results?: Array<{ id: string; values: Record<string, string>; confidence: number; missing: string[] }> }>(content);
+    const aiResults = parsed.results || [];
 
     // Build final extractions — merge AI results with direct EAN/SKU
     const aiByProductId = new Map(aiResults.map(r => [r.id, r]));
