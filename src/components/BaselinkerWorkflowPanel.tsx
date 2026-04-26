@@ -652,10 +652,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     })
 
     try {
-      console.log(`[Category] Fetching parameters for category ${cat.id} (${cat.name})...`)
-      const t0 = performance.now()
       const paramsRes = await fetch(`/api/allegro/parameters?categoryId=${cat.id}`)
-      console.log(`[Category] Parameters response: ${paramsRes.status} in ${Math.round(performance.now() - t0)}ms`)
 
       if (!paramsRes.ok) {
         const errText = await paramsRes.text()
@@ -668,7 +665,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         throw new Error(paramsData.error)
       }
 
-      console.log(`[Category] Got ${(paramsData.parameters ?? []).length} parameters`)
       setParameters(paramsData.parameters ?? [])
 
       let autoFilledParams: Record<string, string | string[]> = {}
@@ -733,7 +729,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
       // Nieblokujący AI auto-fill w tle
       const fetchedParams: AllegroParameter[] = paramsData.parameters ?? []
-      console.log(`[AI auto-fill] Starting: ${fetchedParams.length} params, product attrs: ${Object.keys(productData.attributes ?? {}).length}, already filled: ${Object.keys(autoFilledParams).length}`)
       if (fetchedParams.length > 0) {
         setAiFillStatus('loading')
         fetch("/api/ai-autofill", {
@@ -759,7 +754,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             setAiFillResults(details)
             updateSession({ aiFillResults: details })
             const aiFilled: Record<string, string | string[]> = result.filled ?? {}
-            console.log('[AI auto-fill] filled:', aiFilled, 'details:', details.length)
             if (Object.keys(aiFilled).length > 0) {
               setLocalParameters(prev => {
                 // Sheet values mają priorytet — AI uzupełnia tylko brakujące
@@ -772,7 +766,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                   if (hasValue) continue // sheet priorytet
                   merged[id] = val
                 }
-                console.log('[AI auto-fill] merged params:', Object.keys(merged).length)
                 updateSession({ filledParameters: merged })
                 return merged
               })
