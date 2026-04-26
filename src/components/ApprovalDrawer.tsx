@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { X, AlertTriangle, Send, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import type { ProductSession } from '@/lib/types';
 
@@ -90,11 +91,13 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
             <Section title={`Zdjęcia (${images.length})`}>
               <div className="flex gap-2 flex-wrap">
                 {images.slice(0, 16).map((img, i) => (
-                  // eslint-disable-next-line @next/next/no-img-element -- external URLs (BL/Allegro/Cloudinary/blob:), Image optimization not worth runtime complexity
-                  <img
+                  <Image
                     key={i}
                     src={img}
                     alt={`Zdjęcie ${i + 1}`}
+                    width={64}
+                    height={64}
+                    unoptimized
                     className="w-16 h-16 object-cover rounded-lg border border-border"
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                   />

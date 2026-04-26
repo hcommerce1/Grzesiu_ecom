@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState, useCallback, useRef, useEffect } from "react"
+import Image from "next/image"
 import {
   RefreshCw,
   Loader2,
@@ -1220,12 +1221,13 @@ const ProductRow = memo(function ProductRow({ product, isSelected, onToggle, onD
       </td>
       <td className="px-3 py-2">
         {product.thumbnailUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element -- external BL CDN URLs, Image not worth runtime complexity
-          <img
+          <Image
             src={product.thumbnailUrl}
             alt=""
+            width={40}
+            height={40}
+            unoptimized
             className="size-10 rounded-lg object-contain border border-border bg-white shrink-0"
-            loading="lazy"
           />
         ) : (
           <div className="size-10 rounded-lg bg-muted border border-border" />

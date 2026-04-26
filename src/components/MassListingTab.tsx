@@ -97,7 +97,7 @@ export function MassListingTab({ user }: Props) {
   }, [])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchJobs is async with mounted ref guard, false positive
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchJobs to async function (await przed setState), z mountedRef guard. Rule flaguje wywolanie callee zawierajace setState — false positive dla async pattern
     fetchJobs()
     const interval = setInterval(fetchJobs, 30000)
     return () => clearInterval(interval)

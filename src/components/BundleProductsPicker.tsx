@@ -13,26 +13,26 @@ interface BundleProductsPickerProps {
 }
 
 export function BundleProductsPicker({ inventoryId, bundleProducts, onChange }: BundleProductsPickerProps) {
-  const [products, setProducts] = useState<BLProductListItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  // null = nie załadowane jeszcze; [] = załadowane bez wyników
+  const [products, setProducts] = useState<BLProductListItem[] | null>(null);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+
+  // Loading derived from products state — eliminuje set-state-in-effect anti-pattern
+  const loading = inventoryId != null && products === null;
 
   // Load products from BL
   useEffect(() => {
     if (!inventoryId) return;
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional loading flag, refactor to Suspense pending
-    setLoading(true);
     const url = `/api/bl-products?inventory_id=${inventoryId}`;
     fetch(url)
       .then((r) => r.json())
       .then((data) => {
         if (cancelled) return;
-        if (data.products) setProducts(data.products);
+        setProducts(data.products ?? []);
       })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .catch(() => { if (!cancelled) setProducts([]); });
     return () => { cancelled = true; };
   }, [inventoryId]);
 
@@ -63,12 +63,13 @@ export function BundleProductsPicker({ inventoryId, bundleProducts, onChange }: 
     [bundleProducts, onChange]
   );
 
-  const productMap = new Map(products.map((p) => [p.id, p]));
+  const productList = products ?? [];
+  const productMap = new Map(productList.map((p) => [p.id, p]));
 
   // Filter available products (exclude already selected, exclude bundles)
   const selectedIds = new Set(Object.keys(bundleProducts));
   const searchNorm = search.toLowerCase();
-  const filteredProducts = products.filter((p) => {
+  const filteredProducts = productList.filter((p) => {
     if (selectedIds.has(p.id)) return false;
     if (p.productType === 'bundle') return false;
     if (!search) return true;

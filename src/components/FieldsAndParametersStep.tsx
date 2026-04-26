@@ -674,7 +674,7 @@ function FieldsAndParametersStepInner({
   useEffect(() => {
     if (initialParameterValues !== lastSyncedParams.current) {
       lastSyncedParams.current = initialParameterValues;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing parent prop into local state, intentional
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing parent prop into local state, tracker uzywany rowniez w handlerach (updateParamValue:720) — refactor wymaga zmiany kontraktu
       setParamValues(initialParameterValues ?? {});
     }
   }, [initialParameterValues]);
@@ -687,7 +687,7 @@ function FieldsAndParametersStepInner({
   useEffect(() => {
     if (initialExtraFieldValues !== lastSyncedExtras.current) {
       lastSyncedExtras.current = initialExtraFieldValues;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing parent prop into local state, intentional
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing parent prop into local state, tracker uzywany rowniez w handlerach (updateExtraFieldValue:732)
       setExtraFieldValues(initialExtraFieldValues ?? {});
     }
   }, [initialExtraFieldValues]);

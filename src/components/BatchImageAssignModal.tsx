@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+import NextImage from 'next/image';
 import { X, FolderOpen, Loader2, Upload, Check, Star, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { BLProductListItem, ImageMeta } from '@/lib/types';
@@ -255,10 +256,12 @@ export function BatchImageAssignModal({
                 >
                   {/* Preview */}
                   <div className="relative shrink-0">
-                    {/* eslint-disable-next-line @next/next/no-img-element -- external/blob preview URLs, Image not worth runtime complexity */}
-                    <img
+                    <NextImage
                       src={img.previewUrl}
                       alt=""
+                      width={64}
+                      height={64}
+                      unoptimized
                       className="w-16 h-16 object-cover rounded"
                     />
                     {img.isFeature && (
