@@ -255,6 +255,7 @@ export function BatchImageAssignModal({
                 >
                   {/* Preview */}
                   <div className="relative shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- external/blob preview URLs, Image not worth runtime complexity */}
                     <img
                       src={img.previewUrl}
                       alt=""

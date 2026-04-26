@@ -21,15 +21,19 @@ export function BundleProductsPicker({ inventoryId, bundleProducts, onChange }: 
   // Load products from BL
   useEffect(() => {
     if (!inventoryId) return;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional loading flag, refactor to Suspense pending
     setLoading(true);
     const url = `/api/bl-products?inventory_id=${inventoryId}`;
     fetch(url)
       .then((r) => r.json())
       .then((data) => {
+        if (cancelled) return;
         if (data.products) setProducts(data.products);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [inventoryId]);
 
   const addProduct = useCallback(

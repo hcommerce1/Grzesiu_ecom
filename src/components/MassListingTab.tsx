@@ -97,6 +97,7 @@ export function MassListingTab({ user }: Props) {
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchJobs is async with mounted ref guard, false positive
     fetchJobs()
     const interval = setInterval(fetchJobs, 30000)
     return () => clearInterval(interval)
@@ -116,6 +117,7 @@ export function MassListingTab({ user }: Props) {
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchJobDetail is async with mounted ref guard, false positive
     if (selectedJobId) fetchJobDetail(selectedJobId)
   }, [selectedJobId, fetchJobDetail])
 
@@ -167,6 +169,7 @@ export function MassListingTab({ user }: Props) {
   useEffect(() => {
     for (const job of jobs) {
       if (job.status === 'running' && !isZombie(job) && !pollingRef.current[job.id]) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- async polling with mounted ref guard, false positive
         startPolling(job.id)
       }
     }

@@ -674,6 +674,7 @@ function FieldsAndParametersStepInner({
   useEffect(() => {
     if (initialParameterValues !== lastSyncedParams.current) {
       lastSyncedParams.current = initialParameterValues;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing parent prop into local state, intentional
       setParamValues(initialParameterValues ?? {});
     }
   }, [initialParameterValues]);
@@ -686,6 +687,7 @@ function FieldsAndParametersStepInner({
   useEffect(() => {
     if (initialExtraFieldValues !== lastSyncedExtras.current) {
       lastSyncedExtras.current = initialExtraFieldValues;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing parent prop into local state, intentional
       setExtraFieldValues(initialExtraFieldValues ?? {});
     }
   }, [initialExtraFieldValues]);

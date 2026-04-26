@@ -70,6 +70,7 @@ export function CollapsibleProductItem({ item, index, onRemove }: Props) {
 
         {/* Thumbnail */}
         {hasData && item.product?.images?.[0] ? (
+          // eslint-disable-next-line @next/next/no-img-element -- external scrape URLs, Image not worth runtime complexity
           <img
             src={item.product.images[0]}
             alt=""

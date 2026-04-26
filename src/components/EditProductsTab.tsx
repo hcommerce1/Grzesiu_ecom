@@ -355,15 +355,36 @@ export function EditProductsTab() {
           }
 
           // Prefill editableFieldValues z BL — żeby workflow nie pokazywał zer dla istniejących produktów.
-          // Bierzemy pierwszą wartość z map prices/stock (są keyed by price-group/warehouse).
+          // BL zwraca prices/stock jako mapy keyed po price-group/warehouse. Wartość bywa liczbą
+          // ALBO obiektem (np. { gross, net } dla cen). Defensywnie wyciągamy liczbę.
+          const extractNumber = (v: unknown): number | null => {
+            if (typeof v === 'number') return v
+            if (typeof v === 'string') {
+              const n = parseFloat(v.replace(',', '.'))
+              return isNaN(n) ? null : n
+            }
+            if (v && typeof v === 'object') {
+              const obj = v as Record<string, unknown>
+              for (const k of ['gross', 'value', 'price', 'net', 'amount', 'quantity', 'qty', 'stock']) {
+                const inner = extractNumber(obj[k])
+                if (inner != null) return inner
+              }
+            }
+            return null
+          }
+
           const editPrefill: Record<string, string> = {}
           if (productData.prices && typeof productData.prices === 'object') {
-            const firstPrice = Object.values(productData.prices as Record<string, unknown>).find(v => v != null)
-            if (firstPrice != null) editPrefill['prices'] = String(firstPrice)
+            for (const v of Object.values(productData.prices as Record<string, unknown>)) {
+              const n = extractNumber(v)
+              if (n != null) { editPrefill['prices'] = String(n); break }
+            }
           }
           if (productData.stock && typeof productData.stock === 'object') {
-            const firstStock = Object.values(productData.stock as Record<string, unknown>).find(v => v != null)
-            if (firstStock != null) editPrefill['stock'] = String(firstStock)
+            for (const v of Object.values(productData.stock as Record<string, unknown>)) {
+              const n = extractNumber(v)
+              if (n != null) { editPrefill['stock'] = String(n); break }
+            }
           }
           if (productData.manufacturer_id != null && productData.manufacturer_id !== 0 && productData.manufacturer_id !== '') {
             editPrefill['manufacturer_id'] = String(productData.manufacturer_id)
@@ -1199,6 +1220,7 @@ const ProductRow = memo(function ProductRow({ product, isSelected, onToggle, onD
       </td>
       <td className="px-3 py-2">
         {product.thumbnailUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- external BL CDN URLs, Image not worth runtime complexity
           <img
             src={product.thumbnailUrl}
             alt=""

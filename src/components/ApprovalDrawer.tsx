@@ -90,6 +90,7 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
             <Section title={`Zdjęcia (${images.length})`}>
               <div className="flex gap-2 flex-wrap">
                 {images.slice(0, 16).map((img, i) => (
+                  // eslint-disable-next-line @next/next/no-img-element -- external URLs (BL/Allegro/Cloudinary/blob:), Image optimization not worth runtime complexity
                   <img
                     key={i}
                     src={img}

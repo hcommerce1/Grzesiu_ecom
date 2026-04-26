@@ -37,11 +37,12 @@ export async function POST(request: NextRequest) {
                     data: translatedData,
                     originalData: result.data
                 }, { status: 200 });
-            } catch (translateErr: any) {
+            } catch (translateErr: unknown) {
                 console.warn('Translation failed:', translateErr);
+                const errMsg = translateErr instanceof Error ? translateErr.message : 'The translation LLM failed. Please check your API key in .env.local.';
                 return NextResponse.json({
                     success: false,
-                    error: translateErr.message || 'The translation LLM failed. Please check your API key in .env.local.',
+                    error: errMsg,
                     errorType: 'TRANSLATION_ERROR'
                 }, { status: 500 });
             }

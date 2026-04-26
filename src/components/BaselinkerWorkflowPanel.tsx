@@ -422,14 +422,34 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         if ((!sessionMatchesProduct || !d.session?.editableFieldValues) && productData.editPrefill) {
           setEditableFieldValues(prev => ({ ...productData.editPrefill, ...prev }))
         }
+        // Edit mode: prefill istniejący tytuł i opis z BL żeby Podgląd nie regenerował od nowa.
+        // User dostaje gotowe i klika "Generuj od nowa" tylko jeśli faktycznie chce.
+        const isEditMode = !!editProductId
+        if (isEditMode && (!sessionMatchesProduct || !d.session?.generatedDescription)) {
+          if (productData.description) {
+            setGeneratedDescription({
+              sections: [],
+              fullHtml: productData.description,
+              generatedAt: new Date().toISOString(),
+              inputHash: '',
+            })
+          }
+          if (productData.title) {
+            setLocalTitle(productData.title)
+            setIsTitleGenerated(true)
+          }
+        }
         if (sessionMatchesProduct) {
           if (d.session.is_bundle != null) setIsBundle(d.session.is_bundle)
           if (d.session.bundle_products) setBundleProducts(d.session.bundle_products)
         }
-        // Zdjęcia inicjalizuj z produktu jeśli sesja nie pasuje lub nie ma imagesMeta
+        // Zdjęcia inicjalizuj z produktu jeśli sesja nie pasuje lub nie ma imagesMeta.
+        // Dedupe — BL czasem zwraca ten sam URL kilka razy (różne pozycje/duplikat); to powoduje
+        // React "duplicate key" warning i blokuje rerender (np. po Załaduj sugestie kategorii).
         if (!sessionMatchesProduct || !d.session?.imagesMeta) {
           if (productData.images.length > 0) {
-            setImagesMeta(productData.images.map((url, i) => ({
+            const uniqueUrls = Array.from(new Set(productData.images))
+            setImagesMeta(uniqueUrls.map((url, i) => ({
               url, order: i, removed: false, aiDescription: '',
               aiConfidence: 0, userDescription: '', isFeatureImage: false, features: [],
             })))
@@ -671,6 +691,32 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         }
       }
 
+      // Edit mode — wypełnij parametry z BL features (productData.attributes) gdy kategoria wybrana.
+      // Dopasowanie po nazwie (case-insensitive trim), wartości słownikowe mapowane przez dictionary.value → id.
+      if (productData.attributes && Object.keys(productData.attributes).length > 0 && (paramsData.parameters?.length ?? 0) > 0) {
+        const norm = (s: string) => s.trim().toLowerCase()
+        const blFilled: Record<string, string | string[]> = {}
+        for (const param of paramsData.parameters as AllegroParameter[]) {
+          const target = norm(param.name)
+          const entry = Object.entries(productData.attributes).find(([k]) => norm(k) === target)
+          if (!entry) continue
+          const rawValue = entry[1]
+          if (!rawValue) continue
+          if (param.dictionary && param.dictionary.length > 0) {
+            const values = rawValue.split(/,\s*|;\s*/).map((s: string) => s.trim()).filter(Boolean)
+            const mapped = values
+              .map((v: string) => param.dictionary!.find(opt => norm(opt.value) === norm(v))?.id)
+              .filter((x): x is string => !!x)
+            if (mapped.length === 1) blFilled[param.id] = mapped[0]
+            else if (mapped.length > 1) blFilled[param.id] = mapped
+          } else {
+            blFilled[param.id] = rawValue
+          }
+        }
+        // BL ma niższy priorytet niż sheetData (sheetData = fresh user input)
+        autoFilledParams = { ...blFilled, ...autoFilledParams }
+      }
+
       if (Object.keys(autoFilledParams).length > 0) {
         setLocalParameters(prev => ({ ...prev, ...autoFilledParams }))
       }
@@ -857,9 +903,10 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     setChangeClassification({ severity: 'none', changes: [] })
     setValidationOverride(false)
     lastGeneratedKey.current = ''
-    // Zdjęcia — odzyskaj z productData (BL/scrape source)
+    // Zdjęcia — odzyskaj z productData (BL/scrape source), dedupe URL-i
     if (productData?.images?.length) {
-      setImagesMeta(productData.images.map((url, i) => ({
+      const uniqueUrls = Array.from(new Set(productData.images))
+      setImagesMeta(uniqueUrls.map((url, i) => ({
         url, order: i, removed: false, aiDescription: '',
         aiConfidence: 0, userDescription: '', isFeatureImage: false, features: [],
       })))
