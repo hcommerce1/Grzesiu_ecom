@@ -132,7 +132,10 @@ export async function scrapeProduct(url: string): Promise<ScrapeResponse> {
                 if (result.success && result.data) await enrichAmazonEan(result.data, url);
                 return result;
             }
-            return { success: false, error: 'Brak działającego scrapera (Decodo i ScrapingBee niedostępne)', errorType: 'UNKNOWN' };
+            const fbMsg135 = SCRAPINGBEE_API_KEY
+                ? 'Decodo i ScrapingBee oba zwróciły fail — sprawdź URL, kredyty i statusy API'
+                : 'Decodo nie zwrócił danych (URL nieistniejący / brak kredytów / blokada). Brak fallbacku ScrapingBee — klucz nieustawiony.';
+            return { success: false, error: fbMsg135, errorType: 'UNKNOWN' };
         } else {
             // Primary: ScrapingBee
             if (SCRAPINGBEE_API_KEY) {
@@ -150,7 +153,10 @@ export async function scrapeProduct(url: string): Promise<ScrapeResponse> {
                 if (result.success && result.data) await enrichAmazonEan(result.data, url);
                 return result;
             }
-            return { success: false, error: 'Brak działającego scrapera (ScrapingBee i Decodo niedostępne)', errorType: 'UNKNOWN' };
+            const fbMsg153 = (DECODO_API_USERNAME && DECODO_API_PASSWORD)
+                ? 'ScrapingBee i Decodo oba zwróciły fail — sprawdź URL, kredyty i statusy API'
+                : 'ScrapingBee nie zwrócił danych. Brak fallbacku Decodo — klucze nieustawione.';
+            return { success: false, error: fbMsg153, errorType: 'UNKNOWN' };
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unknown error occurred';

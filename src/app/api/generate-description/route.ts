@@ -58,9 +58,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ sections, fullHtml, inputHash, inputSnapshot, usage, cost, warning });
   } catch (err) {
     console.error('[generate-description] failed:', err);
+    const message = err instanceof Error ? err.message : 'Błąd generowania opisu';
+    // User errors (missing data) → 400; server errors (Anthropic, network) → 500
+    const isUserError = message.includes('Brak aktywnych zdjęć') || message.includes('Brak session');
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Błąd generowania opisu' },
-      { status: 500 },
+      { error: message },
+      { status: isUserError ? 400 : 500 },
     );
   }
 }

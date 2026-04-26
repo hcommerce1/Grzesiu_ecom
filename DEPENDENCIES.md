@@ -49,7 +49,7 @@ Node.js: **20+** (zalecane 22 LTS). Manager: **npm** (ale działa też pnpm/yarn
 |---|---|---|
 | `@anthropic-ai/sdk` | ^0.89.0 | Claude API / Agent SDK (panel agenta, generacja opisów, vision) |
 
-> Uwaga: OpenAI API wołane jest przez `fetch` — brak osobnego SDK w deps.
+> Uwaga: kod używa wyłącznie Anthropic SDK. OpenAI to legacy z wcześniejszej wersji aplikacji — można zignorować ewentualne wzmianki w starych komentarzach.
 
 ### Storage / pliki / cloud
 
