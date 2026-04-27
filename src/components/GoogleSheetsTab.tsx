@@ -802,16 +802,6 @@ export function GoogleSheetsTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setShowResetDialog(true)}
-            disabled={loading || syncing || !!batch}
-            className="gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
-          >
-            <RotateCcw className="size-3.5" />
-            Zacznij od nowa
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
             onClick={syncFromSheets}
             disabled={loading || syncing}
             className="gap-1.5"
