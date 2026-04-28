@@ -81,116 +81,122 @@ export function AppPreview({
 
   return (
     <div className="bg-background text-foreground">
-      <div className="mx-auto max-w-4xl p-6 space-y-6">
-        {/* Tytuł */}
-        <h1 className="text-2xl sm:text-3xl font-bold leading-tight">{title || "Brak tytułu"}</h1>
+      <div className="mx-auto max-w-6xl p-6">
+        <div className="flex flex-col md:flex-row gap-8 items-start">
 
-        {price != null && (
-          <div className="text-2xl font-semibold text-primary">{price.toFixed(2)} zł</div>
-        )}
+          {/* Lewa kolumna: galeria */}
+          {activeImages.length > 0 && (
+            <div className="w-full md:w-2/5 md:sticky md:top-6 space-y-3">
+              <div className="relative rounded-xl overflow-hidden bg-muted/30 border border-border">
+                <img
+                  src={activeImage?.url}
+                  alt={`${title} — zdjęcie ${safeIdx + 1}`}
+                  className="w-full max-h-[500px] object-contain bg-white"
+                />
+                {activeImages.length > 1 && (
+                  <>
+                    <button
+                      onClick={goPrev}
+                      aria-label="Poprzednie zdjęcie"
+                      className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/80 hover:bg-background border border-border shadow-sm transition-colors"
+                    >
+                      <ChevronLeft className="size-5" />
+                    </button>
+                    <button
+                      onClick={goNext}
+                      aria-label="Następne zdjęcie"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/80 hover:bg-background border border-border shadow-sm transition-colors"
+                    >
+                      <ChevronRight className="size-5" />
+                    </button>
+                    <div className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-background/80 border border-border text-xs font-medium">
+                      {safeIdx + 1} / {activeImages.length}
+                    </div>
+                  </>
+                )}
+              </div>
 
-        {/* Galeria */}
-        {activeImages.length > 0 && (
-          <div className="space-y-3">
-            <div className="relative rounded-xl overflow-hidden bg-muted/30 border border-border">
-              <img
-                src={activeImage?.url}
-                alt={`${title} — zdjęcie ${safeIdx + 1}`}
-                className="w-full max-h-[600px] object-contain bg-white"
-              />
+              {/* Miniatury z numeracją */}
               {activeImages.length > 1 && (
-                <>
-                  <button
-                    onClick={goPrev}
-                    aria-label="Poprzednie zdjęcie"
-                    className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/80 hover:bg-background border border-border shadow-sm transition-colors"
-                  >
-                    <ChevronLeft className="size-5" />
-                  </button>
-                  <button
-                    onClick={goNext}
-                    aria-label="Następne zdjęcie"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/80 hover:bg-background border border-border shadow-sm transition-colors"
-                  >
-                    <ChevronRight className="size-5" />
-                  </button>
-                  <div className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-background/80 border border-border text-xs font-medium">
-                    {safeIdx + 1} / {activeImages.length}
-                  </div>
-                </>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {activeImages.map((img, i) => (
+                    <button
+                      key={img.url}
+                      onClick={() => setActiveIdx(i)}
+                      className={`relative shrink-0 size-14 rounded-lg overflow-hidden border-2 transition-colors ${
+                        i === safeIdx
+                          ? "border-primary ring-2 ring-primary/30"
+                          : "border-border hover:border-primary/50"
+                      }`}
+                    >
+                      <img src={img.url} alt="" className="size-full object-cover" />
+                      <span className="absolute top-0.5 left-0.5 size-4 rounded-full bg-background/90 text-[9px] font-bold flex items-center justify-center text-foreground">
+                        {i + 1}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
+          )}
 
-            {/* Miniatury z numeracją */}
-            {activeImages.length > 1 && (
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {activeImages.map((img, i) => (
-                  <button
-                    key={img.url}
-                    onClick={() => setActiveIdx(i)}
-                    className={`relative shrink-0 size-16 rounded-lg overflow-hidden border-2 transition-colors ${
-                      i === safeIdx
-                        ? "border-primary ring-2 ring-primary/30"
-                        : "border-border hover:border-primary/50"
-                    }`}
-                  >
-                    <img src={img.url} alt="" className="size-full object-cover" />
-                    <span className="absolute top-0.5 left-0.5 size-4 rounded-full bg-background/90 text-[9px] font-bold flex items-center justify-center text-foreground">
-                      {i + 1}
-                    </span>
-                  </button>
-                ))}
-              </div>
+          {/* Prawa kolumna: tytuł + opis + specyfikacja */}
+          <div className="w-full md:flex-1 space-y-6">
+            <h1 className="text-2xl sm:text-3xl font-bold leading-tight">{title || "Brak tytułu"}</h1>
+
+            {price != null && (
+              <div className="text-2xl font-semibold text-primary">{price.toFixed(2)} zł</div>
+            )}
+
+            {/* Opis */}
+            {fullHtml && (
+              <section className="space-y-2">
+                <h2 className="text-lg font-semibold border-b border-border pb-1">Opis</h2>
+                <div
+                  className="app-preview-prose text-sm leading-relaxed"
+                  dangerouslySetInnerHTML={{ __html: fullHtml }}
+                />
+              </section>
+            )}
+
+            {/* Specyfikacja */}
+            {(paramRows.length > 0 || ean || sku || categoryPath) && (
+              <section className="space-y-2">
+                <h2 className="text-lg font-semibold border-b border-border pb-1 flex items-center gap-2">
+                  <Tag className="size-4" />
+                  Specyfikacja
+                </h2>
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                  {categoryPath && (
+                    <div className="contents">
+                      <dt className="text-muted-foreground">Kategoria</dt>
+                      <dd className="font-medium">{categoryPath}</dd>
+                    </div>
+                  )}
+                  {ean && (
+                    <div className="contents">
+                      <dt className="text-muted-foreground">EAN</dt>
+                      <dd className="font-mono text-xs">{ean}</dd>
+                    </div>
+                  )}
+                  {sku && (
+                    <div className="contents">
+                      <dt className="text-muted-foreground">SKU</dt>
+                      <dd className="font-mono text-xs">{sku}</dd>
+                    </div>
+                  )}
+                  {paramRows.map((row, i) => (
+                    <div key={i} className="contents">
+                      <dt className="text-muted-foreground">{row.name}</dt>
+                      <dd className="font-medium">{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
             )}
           </div>
-        )}
 
-        {/* Opis */}
-        {fullHtml && (
-          <section className="space-y-2">
-            <h2 className="text-lg font-semibold border-b border-border pb-1">Opis</h2>
-            <div
-              className="app-preview-prose text-sm leading-relaxed"
-              dangerouslySetInnerHTML={{ __html: fullHtml }}
-            />
-          </section>
-        )}
-
-        {/* Specyfikacja */}
-        {(paramRows.length > 0 || ean || sku || categoryPath) && (
-          <section className="space-y-2">
-            <h2 className="text-lg font-semibold border-b border-border pb-1 flex items-center gap-2">
-              <Tag className="size-4" />
-              Specyfikacja
-            </h2>
-            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-              {categoryPath && (
-                <div className="contents">
-                  <dt className="text-muted-foreground">Kategoria</dt>
-                  <dd className="font-medium">{categoryPath}</dd>
-                </div>
-              )}
-              {ean && (
-                <div className="contents">
-                  <dt className="text-muted-foreground">EAN</dt>
-                  <dd className="font-mono text-xs">{ean}</dd>
-                </div>
-              )}
-              {sku && (
-                <div className="contents">
-                  <dt className="text-muted-foreground">SKU</dt>
-                  <dd className="font-mono text-xs">{sku}</dd>
-                </div>
-              )}
-              {paramRows.map((row, i) => (
-                <div key={i} className="contents">
-                  <dt className="text-muted-foreground">{row.name}</dt>
-                  <dd className="font-medium">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-        )}
+        </div>
       </div>
 
       {/* Inline styling dla opisu — minimalistyczna wersja prose żeby nie ściągać @tailwindcss/typography */}

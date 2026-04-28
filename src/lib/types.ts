@@ -242,6 +242,7 @@ export interface ImageMeta {
   isFeatureImage: boolean
   features: string[]
   uploadedVia?: 'r2' | 'cloudinary'
+  isLogo?: boolean
 }
 
 export interface DescriptionSection {
@@ -382,9 +383,32 @@ export interface BLProductListItem {
 
 // ─── Image Generation Types ───
 
-export type ImageGenIntent = 'background_removal' | 'simple_edit' | 'generation' | 'context_edit';
-export type ImageGenProvider = 'removebg' | 'replicate' | 'nanobananapro' | 'fluxcontextpro';
+export type ImageGenIntent =
+  | 'background_removal'
+  | 'replace_background'
+  | 'simple_edit'
+  | 'generation'
+  | 'context_edit'
+  | 'relight'
+  | 'add_shadow'
+  | 'remove_text'
+  | 'upscale'
+  | 'expand';
+
+export type ImageGenProvider = 'removebg' | 'replicate' | 'nanobananapro' | 'fluxcontextpro' | 'photoroom';
 export type ImageGenMode = 'generate' | 'edit';
+
+export type PhotoRoomOperation =
+  | 'remove_background'
+  | 'replace_background'
+  | 'relight'
+  | 'add_shadow'
+  | 'remove_text'
+  | 'upscale'
+  | 'expand'
+  | 'flat_lay'
+  | 'ghost_mannequin'
+  | 'custom';
 
 export interface PromptClassification {
   intent: ImageGenIntent;
@@ -396,6 +420,8 @@ export interface PromptClassification {
   suggestion?: string;
   isValid: boolean;
   rejectionReason?: string;
+  photoRoomOperation?: PhotoRoomOperation;
+  backgroundPrompt?: string;
 }
 
 export interface ImageGenRequest {

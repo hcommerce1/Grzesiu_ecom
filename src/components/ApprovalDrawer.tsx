@@ -80,7 +80,7 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
 
           {/* Basic info */}
           <Section title="Podstawowe informacje">
-            <Row label="Nazwa" value={session.data?.title} />
+            <Row label="Nazwa" value={session.generatedTitle || session.data?.title} />
             {sel['sku'] !== false && session.data?.sku && <Row label="SKU" value={session.data.sku} />}
             {sel['ean'] !== false && session.data?.ean && <Row label="EAN" value={session.data.ean} />}
             {session.data?.price && <Row label="Cena" value={`${session.data.price} ${session.data.currency ?? 'PLN'}`} />}

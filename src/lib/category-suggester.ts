@@ -27,6 +27,52 @@ function buildFallbackTerms(productTitle: string, attributes: Record<string, str
   return Array.from(new Set(terms.filter(Boolean)));
 }
 
+async function selectBestCategory(
+  productTitle: string,
+  attributes: Record<string, string>,
+  candidates: Array<{ id: string; name: string; fullPath: string }>,
+  anthropic: Anthropic,
+): Promise<string | null> {
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0].id;
+
+  const attributesSummary = Object.entries(attributes)
+    .slice(0, 10)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(', ');
+
+  const candidateList = candidates
+    .map((c, i) => `${i + 1}. [${c.id}] ${c.fullPath}`)
+    .join('\n');
+
+  const prompt = `Masz produkt i listę kandydatów kategorii Allegro. Wybierz JEDNĄ najlepiej pasującą.
+
+Produkt: "${productTitle}"${attributesSummary ? `\nAtrybuty: ${attributesSummary}` : ''}
+
+Kandydaci:
+${candidateList}
+
+Odpowiedz WYŁĄCZNIE numerem ID wybranej kategorii (sama liczba, zero innych znaków):`;
+
+  try {
+    const res = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 20,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const raw = (res.content[0] as { type: 'text'; text: string }).text.trim();
+    const picked = raw.replace(/\D/g, '');
+    const found = candidates.find(c => c.id === picked);
+    if (found) {
+      console.log(`[suggestCategory] best pick: [${found.id}] ${found.fullPath}`);
+      return found.id;
+    }
+  } catch (err) {
+    console.log('[suggestCategory] selectBestCategory failed:', err instanceof Error ? err.message : err);
+  }
+  return null;
+}
+
 export async function suggestCategory(
   productTitle: string,
   attributes: Record<string, string>,
@@ -40,16 +86,28 @@ export async function suggestCategory(
     .map(([k, v]) => `${k}: ${v}`)
     .join('\n');
 
-  const userPrompt = `Jesteś ekspertem od kategoryzacji produktów na Allegro.pl.
+  const userPrompt = `Jesteś ekspertem od struktury kategorii Allegro.pl.
 
 Produkt: "${productTitle}"
 ${attributesSummary ? `Atrybuty:\n${attributesSummary}` : ''}
 
-Zaproponuj 5-8 wyszukiwań kategorii Allegro, które najlepiej pasują do tego produktu.
-Każde wyszukiwanie to 1-3 słowa kluczowe po polsku, które mogą być nazwą kategorii liściowej na Allegro.
+Twoim zadaniem jest zaproponowanie 6-8 fraz wyszukiwania, które pasują do NAZW kategorii na Allegro.
+Kategorie Allegro to krótkie polskie rzeczowniki lub wyrażenia rzeczownikowe, np.:
+- "Patchcordy", "Kable sieciowe", "Złączki kablowe", "Dławiki", "Rury osłonowe"
+- "Odkurzacze pionowe", "Roboty sprzątające", "Akcesoria do odkurzaczy"
+- "Wiertarki udarowe", "Szlifierki kątowe", "Narzędzia elektryczne"
 
-Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
-{"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}`;
+ZASADY:
+1. Pomijaj marki, numery modeli, wymiary, kolory — szukaj po TYPIE produktu
+2. Zacznij od najbardziej szczegółowej nazwy (2-3 słowa), kończ na ogólnej (2 słowa)
+3. Używaj polskich rzeczowników w mianowniku liczby mnogiej lub pojedynczej
+4. Jeśli tytuł jest po angielsku, przetłumacz typ produktu na polski
+5. NIGDY nie używaj ogólnych słów: "zestawy", "akcesoria", "produkty", "artykuły" —
+   te słowa pasują do setek niezwiązanych kategorii. Zamiast tego użyj nadrzędnej kategorii
+   (np. zamiast "zestawy" → "zastawa stołowa"; zamiast "akcesoria" → "akcesoria elektryczne")
+
+Odpowiedz WYŁĄCZNIE tym JSON (bez żadnych innych znaków, bez \`\`\`):
+{"searches": ["fraza 1", "fraza 2", "fraza 3", "fraza 4", "fraza 5", "fraza 6"]}`;
 
   onProgress?.('Generuję zapytania wyszukiwania...');
 
@@ -66,7 +124,9 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
     cache_read_input_tokens: (llmRes.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens,
   };
 
-  const content = (llmRes.content[0] as { type: 'text'; text: string }).text ?? '{}';
+  const rawContent = (llmRes.content[0] as { type: 'text'; text: string }).text ?? '{}';
+  // Strip markdown code fences if LLM wraps response despite instructions
+  const content = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
   let searches: string[] = [];
   let parseOk = true;
   try {
@@ -131,15 +191,28 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 
   const topResults = allResults.slice(0, 10);
   console.log(`[suggestCategory] final candidates: ${topResults.length}`);
-  const COMMISSION_BATCH = 5;
 
-  onProgress?.(`Pobieram prowizje dla top ${Math.min(COMMISSION_BATCH, topResults.length)}...`);
+  // Krok 3: LLM wybiera najlepszą kategorię z kandydatów
+  onProgress?.('Wybieram najlepszą kategorię...');
+  const bestId = await selectBestCategory(productTitle, attributes, topResults, anthropic);
+
+  // Przesuń wybraną kategorię na pierwszą pozycję
+  let orderedResults = topResults;
+  if (bestId) {
+    const bestIdx = topResults.findIndex(c => c.id === bestId);
+    if (bestIdx > 0) {
+      orderedResults = [topResults[bestIdx], ...topResults.slice(0, bestIdx), ...topResults.slice(bestIdx + 1)];
+    }
+  }
+
+  const COMMISSION_BATCH = 5;
+  onProgress?.(`Pobieram prowizje dla top ${Math.min(COMMISSION_BATCH, orderedResults.length)}...`);
 
   const commissionsRaw = await Promise.allSettled(
-    topResults.slice(0, COMMISSION_BATCH).map(cat => getCommissionInfo(cat.id))
+    orderedResults.slice(0, COMMISSION_BATCH).map(cat => getCommissionInfo(cat.id))
   );
 
-  const suggestions: CategorySuggestion[] = topResults.map((cat, i) => ({
+  const suggestions: CategorySuggestion[] = orderedResults.map((cat, i) => ({
     id: cat.id,
     name: cat.name,
     path: cat.fullPath,

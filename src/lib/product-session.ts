@@ -156,7 +156,7 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     is_bundle: false, // wymuszone — bundle nie jest już używany w workflow
     tax_rate: session.tax_rate,
     text_fields: {
-      name: data.title,
+      name: session.generatedTitle || data.title,
     } as Record<string, string>,
   };
 

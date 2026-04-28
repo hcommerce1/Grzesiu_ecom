@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   Wand2,
+  Award,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -406,6 +407,21 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange, pr
                     title={img.aiDescription ? "Analizuj ponownie" : "Analizuj"}
                   >
                     {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                  </button>
+                  <button
+                    onClick={() => updateMeta(prev => prev.map(m =>
+                      m.url === img.url
+                        ? { ...m, isLogo: !img.isLogo }
+                        : { ...m, isLogo: false }
+                    ))}
+                    className={`p-1.5 rounded-md transition-colors ${
+                      img.isLogo
+                        ? "text-amber-600 bg-amber-50 hover:bg-amber-100"
+                        : "hover:bg-accent text-muted-foreground hover:text-foreground"
+                    }`}
+                    title={img.isLogo ? "Usuń oznaczenie logo producenta" : "Oznacz jako logo producenta"}
+                  >
+                    <Award className="size-4" />
                   </button>
                   <button
                     onClick={() => handleRemove(img.url)}

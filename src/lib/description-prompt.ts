@@ -84,7 +84,6 @@ Dopasuj imageIndex do treści sekcji:
 - Zdjęcie produktu w użyciu/w otoczeniu → cechy i zalety lub zastosowania
 - Zdjęcie detalu/złącza/końcówki → sekcja budowy lub szczegółów
 - Zdjęcie opakowania/zestawu → jeśli ważne
-- Logo producenta → images-only na dole (jeśli dostępne w atrybutach)
 
 ## SEKCJA STANU [tylko gdy PW/PZ/U]
 
@@ -106,7 +105,7 @@ NIGDY nie dodawaj "Stan: Nowy" do specyfikacji.
    - Produkty lifestyle → WYOBRAŹ SOBIE: historia w 2. osobie
    - Brak wystarczających danych → pomiń
 6. SPECYFIKACJA TECHNICZNA — lista parametrów <ul><li>Param: <b>wartość</b></li></ul>
-7. [opcjonalnie] Logo producenta — layout: "images-only" jeśli URL logo dostępny w atrybutach
+7. [opcjonalnie] Dodatkowa sekcja szczegółowa lub SPECYFIKACJA TECHNICZNA jeśli wymagana osobno
 
 ## FORMAT ODPOWIEDZI
 

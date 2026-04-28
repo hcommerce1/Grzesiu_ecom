@@ -8,6 +8,35 @@ import { parseClaudeJson } from './parse-claude-json';
 
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
+async function probeAspectRatio(url: string): Promise<number | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { Range: 'bytes=0-2047' },
+      signal: AbortSignal.timeout(3000),
+    });
+    const buf = Buffer.from(await res.arrayBuffer());
+    // PNG: magic 0x89 0x50, width @ 16-19, height @ 20-23
+    if (buf[0] === 0x89 && buf[1] === 0x50) {
+      const w = buf.readUInt32BE(16);
+      const h = buf.readUInt32BE(20);
+      return h > 0 ? w / h : null;
+    }
+    // JPEG: magic 0xFF 0xD8, scan for SOF0 (0xC0) or SOF2 (0xC2)
+    if (buf[0] === 0xFF && buf[1] === 0xD8) {
+      for (let i = 2; i < buf.length - 8; i++) {
+        if (buf[i] === 0xFF && (buf[i + 1] === 0xC0 || buf[i + 1] === 0xC2)) {
+          const h = buf.readUInt16BE(i + 5);
+          const w = buf.readUInt16BE(i + 7);
+          return h > 0 ? w / h : null;
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export interface GenerateDescriptionOptions {
   session: ProductSession;
   imagesMeta: ImageMeta[];
@@ -30,7 +59,15 @@ export async function generateDescription(
     throw new Error('Brak aktywnych zdjęć do generowania opisu');
   }
 
-  const imageDescriptions = activeImages
+  // Logo jest obsługiwane osobno — wydzielamy je przed wysłaniem do Claude
+  const logoImg = activeImages.find(i => i.isLogo);
+  const imagesForClaude = logoImg ? activeImages.filter(i => !i.isLogo) : activeImages;
+
+  if (!imagesForClaude.length) {
+    throw new Error('Brak aktywnych zdjęć do generowania opisu (poza logo)');
+  }
+
+  const imageDescriptions = imagesForClaude
     .map((img, idx) => {
       const desc = img.userDescription || img.aiDescription || 'Brak opisu';
       const feats = img.features?.length ? ` [Cechy: ${img.features.join(', ')}]` : '';
@@ -83,7 +120,7 @@ export async function generateDescription(
     attributes: attributes || '(brak)',
     category: categoryPath || '(nie wybrano)',
     parameters: parameters || '(brak)',
-    image_count: activeImages.length,
+    image_count: imagesForClaude.length,
     image_descriptions: imageDescriptions,
     uwagi: uwagi || '(brak uwag — produkt w pełni sprawny)',
     reference_description: '',
@@ -123,16 +160,16 @@ export async function generateDescription(
   const rawSections: Array<{ imageIndex?: number; imageIndices?: number[]; heading?: string; body?: string; layout?: string }> =
     (Array.isArray(parsed?.sections) ? parsed.sections : []) as Array<{ imageIndex?: number; imageIndices?: number[]; heading?: string; body?: string; layout?: string }>;
 
-  const sections: DescriptionSection[] = rawSections.map((s, idx) => {
+  const claudeSections: DescriptionSection[] = rawSections.map((s, idx) => {
     const isImagesOnly = s.layout === 'images-only';
     let imageUrls: string[] = [];
 
     if (isImagesOnly && Array.isArray(s.imageIndices)) {
       imageUrls = s.imageIndices
-        .filter((i: number) => i >= 0 && i < activeImages.length)
-        .map((i: number) => activeImages[i].url);
-    } else if (typeof s.imageIndex === 'number' && s.imageIndex >= 0 && s.imageIndex < activeImages.length) {
-      imageUrls = [activeImages[s.imageIndex].url];
+        .filter((i: number) => i >= 0 && i < imagesForClaude.length)
+        .map((i: number) => imagesForClaude[i].url);
+    } else if (typeof s.imageIndex === 'number' && s.imageIndex >= 0 && s.imageIndex < imagesForClaude.length) {
+      imageUrls = [imagesForClaude[s.imageIndex].url];
     }
 
     return {
@@ -143,6 +180,22 @@ export async function generateDescription(
       layout: (s.layout as DescriptionSection['layout']) || 'image-text',
     };
   });
+
+  // Jeśli jest logo i jest szerokie (aspect > 1.5) → prepend jako pierwsza sekcja
+  let sections = claudeSections;
+  if (logoImg) {
+    const aspect = await probeAspectRatio(logoImg.url);
+    if (aspect !== null && aspect > 1.5) {
+      const logoSection: DescriptionSection = {
+        id: 'section-logo',
+        imageUrls: [logoImg.url],
+        heading: title,
+        bodyHtml: '',
+        layout: 'image-text',
+      };
+      sections = [logoSection, ...claudeSections];
+    }
+  }
 
   const fullHtml = compileSectionsToHtml(sections);
   const snapshot = buildInputSnapshot(

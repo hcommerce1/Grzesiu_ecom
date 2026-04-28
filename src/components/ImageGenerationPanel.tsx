@@ -179,6 +179,8 @@ export function ImageGenerationPanel({ activeImages, onAddImage, onReplaceImage,
           sourceImageUrl: sourceImageUrl || undefined,
           provider: effectiveProvider,
           mode: classification.mode,
+          photoRoomOperation: classification.photoRoomOperation,
+          backgroundPrompt: classification.backgroundPrompt,
         }),
       })
       const data = (await res.json()) as ImageGenResult

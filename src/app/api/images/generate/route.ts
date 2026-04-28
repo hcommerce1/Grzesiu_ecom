@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
-import type { ImageGenMode, ImageGenProvider, ImageGenResult } from '@/lib/types';
+import type { ImageGenMode, ImageGenProvider, ImageGenResult, PhotoRoomOperation } from '@/lib/types';
 import { uploadImage } from '@/lib/cloud-storage';
 
 // Env vars
 const FAL_KEY = process.env.FAL_KEY || '';
 const REMOVEBG_API_KEY = process.env.REMOVEBG_API_KEY || '';
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN || '';
+const PHOTOROOM_API_KEY = process.env.PHOTOROOM_API_KEY || '';
 
 // Konfigurowalne slugi modeli
 const FAL_MODEL_NANOBANANAPRO = process.env.FAL_MODEL_NANOBANANAPRO || 'fal-ai/nano-banana-pro';
@@ -22,6 +23,8 @@ interface RequestBody {
   sourceImageUrl?: string;
   provider: ImageGenProvider;
   mode: ImageGenMode;
+  photoRoomOperation?: PhotoRoomOperation;
+  backgroundPrompt?: string;
 }
 
 // ─── remove.bg ───
@@ -146,6 +149,103 @@ async function generateReplicate(prompt: string, sourceImageUrl?: string): Promi
   return { success: false, provider: 'replicate', error: 'Replicate timeout — generacja trwała za długo' };
 }
 
+// ─── PhotoRoom ───
+async function generatePhotoRoom(
+  sourceImageUrl: string,
+  operation: PhotoRoomOperation,
+  enrichedPrompt: string,
+  backgroundPrompt?: string,
+): Promise<ImageGenResult> {
+  if (!PHOTOROOM_API_KEY) {
+    return { success: false, provider: 'photoroom', error: 'PHOTOROOM_API_KEY nie jest ustawiony' };
+  }
+  if (!sourceImageUrl) {
+    return { success: false, provider: 'photoroom', error: 'PhotoRoom wymaga zdjęcia źródłowego' };
+  }
+
+  // Pobierz obraz źródłowy jako buffer
+  const imgRes = await fetch(sourceImageUrl);
+  if (!imgRes.ok) {
+    return { success: false, provider: 'photoroom', error: `Nie udało się pobrać zdjęcia: ${imgRes.status}` };
+  }
+  const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+  const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+  const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+
+  const form = new FormData();
+  form.append('imageFile', new Blob([imgBuffer], { type: contentType }), `source.${ext}`);
+
+  // Mapowanie operation → parametry PhotoRoom API
+  switch (operation) {
+    case 'remove_background':
+      form.append('removeBackground', 'true');
+      break;
+
+    case 'replace_background':
+      form.append('removeBackground', 'true');
+      form.append('background.aiPrompt', backgroundPrompt || enrichedPrompt);
+      break;
+
+    case 'relight':
+      form.append('removeBackground', 'false');
+      form.append('relight.prompt', enrichedPrompt);
+      break;
+
+    case 'add_shadow':
+      form.append('removeBackground', 'true');
+      form.append('shadow.mode', 'ai.soft');
+      break;
+
+    case 'remove_text':
+      form.append('removeBackground', 'false');
+      form.append('removeText', 'true');
+      break;
+
+    case 'upscale':
+      form.append('removeBackground', 'false');
+      form.append('upscaling.upscaleFactor', '2');
+      break;
+
+    case 'expand':
+      form.append('removeBackground', 'false');
+      form.append('imageExpansion.prompt', enrichedPrompt);
+      break;
+
+    case 'flat_lay':
+      form.append('removeBackground', 'true');
+      form.append('flatLay', 'true');
+      break;
+
+    case 'ghost_mannequin':
+      form.append('removeBackground', 'true');
+      form.append('ghostMannequin', 'true');
+      break;
+
+    default:
+      // custom — użyj enrichedPrompt jako background AI prompt
+      form.append('removeBackground', 'true');
+      form.append('background.aiPrompt', enrichedPrompt);
+      break;
+  }
+
+  const response = await fetch('https://image-api.photoroom.com/v2/edit', {
+    method: 'POST',
+    headers: { 'x-api-key': PHOTOROOM_API_KEY },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    return { success: false, provider: 'photoroom', error: `PhotoRoom error (${response.status}): ${err}` };
+  }
+
+  // Odpowiedź to binarny PNG — konwertujemy na data URI, potem uploadujemy do R2
+  const imgData = Buffer.from(await response.arrayBuffer());
+  const dataUri = `data:image/png;base64,${imgData.toString('base64')}`;
+
+  return { success: true, provider: 'photoroom', imageUrl: dataUri, costEstimate: '~$0.05–$0.15', costUsd: 0.07 };
+}
+
 // ─── fal.ai (NanoBananaPro / FluxContextPro) ───
 async function generateFal(
   prompt: string,
@@ -178,6 +278,10 @@ async function generateFal(
     if (modelSlug === 'fal-ai/nano-banana-pro') {
       effectiveSlug = 'fal-ai/nano-banana-pro/edit';
       body.image_urls = [sourceImageUrl];
+    } else if (modelSlug.includes('flux')) {
+      // flux-pro/v1.1-ultra to text-to-image — do edycji z source image potrzebny kontext
+      effectiveSlug = 'fal-ai/flux-pro/kontext';
+      body.image_url = sourceImageUrl;
     } else {
       body.image_url = sourceImageUrl;
       body.strength = 0.75;
@@ -237,7 +341,7 @@ async function persistGeneratedImage(rawUrl: string, provider: ImageGenProvider)
 // ─── Main handler ───
 export async function POST(req: Request) {
   try {
-    const { prompt, sourceImageUrl, provider, mode } = (await req.json()) as RequestBody;
+    const { prompt, sourceImageUrl, provider, mode, photoRoomOperation, backgroundPrompt } = (await req.json()) as RequestBody;
 
     if (!prompt?.trim() && provider !== 'removebg') {
       return NextResponse.json(
@@ -271,6 +375,15 @@ export async function POST(req: Request) {
 
       case 'fluxcontextpro':
         result = await generateFal(prompt, FAL_MODEL_FLUXCONTEXTPRO, effectiveMode, sourceImageUrl);
+        break;
+
+      case 'photoroom':
+        result = await generatePhotoRoom(
+          sourceImageUrl || '',
+          photoRoomOperation ?? 'custom',
+          prompt,
+          backgroundPrompt,
+        );
         break;
 
       default:

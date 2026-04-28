@@ -1,4 +1,4 @@
-import type { ImageGenIntent, ImageGenMode, ImageGenProvider } from './types';
+import type { ImageGenIntent, ImageGenMode, ImageGenProvider, PhotoRoomOperation } from './types';
 
 /**
  * Kliencka pre-walidacja promptu PRZED wysłaniem do API klasyfikacji.
@@ -22,8 +22,8 @@ export function isPromptValid(prompt: string): { valid: boolean; reason?: string
   }
 
   const wordCount = trimmed.split(/\s+/).length;
-  if (wordCount < 3) {
-    return { valid: false, reason: 'Opisz bardziej szczegółowo (minimum 3 słowa).' };
+  if (wordCount < 2) {
+    return { valid: false, reason: 'Opisz bardziej szczegółowo (minimum 2 słowa).' };
   }
 
   return { valid: true };
@@ -42,6 +42,8 @@ export function getProviderDisplayName(provider: ImageGenProvider): string {
       return 'NanoBananaPro';
     case 'fluxcontextpro':
       return 'FluxContextPro';
+    case 'photoroom':
+      return 'PhotoRoom';
   }
 }
 
@@ -58,6 +60,8 @@ export function getProviderCostHint(provider: ImageGenProvider): string {
       return '$$$';
     case 'fluxcontextpro':
       return '$$$$';
+    case 'photoroom':
+      return '$$$';
   }
 }
 
@@ -68,12 +72,39 @@ export function getIntentDisplayName(intent: ImageGenIntent): string {
   switch (intent) {
     case 'background_removal':
       return 'Usuwanie tła';
+    case 'replace_background':
+      return 'Zamiana tła';
     case 'simple_edit':
       return 'Prosta edycja';
     case 'generation':
       return 'Generacja zdjęcia';
     case 'context_edit':
       return 'Edycja kontekstowa';
+    case 'relight':
+      return 'Zmiana oświetlenia';
+    case 'add_shadow':
+      return 'Dodanie cienia';
+    case 'remove_text':
+      return 'Usunięcie tekstu';
+    case 'upscale':
+      return 'Powiększenie rozdzielczości';
+    case 'expand':
+      return 'Rozszerzenie kadru';
+  }
+}
+
+export function getPhotoRoomOperationDisplayName(op: PhotoRoomOperation): string {
+  switch (op) {
+    case 'remove_background': return 'Usuń tło';
+    case 'replace_background': return 'Zamień tło';
+    case 'relight': return 'Zmień oświetlenie';
+    case 'add_shadow': return 'Dodaj cień';
+    case 'remove_text': return 'Usuń tekst';
+    case 'upscale': return 'Upscale 2x';
+    case 'expand': return 'Rozszerz kadr';
+    case 'flat_lay': return 'Flat lay';
+    case 'ghost_mannequin': return 'Ghost mannequin';
+    case 'custom': return 'Edycja AI';
   }
 }
 

@@ -160,7 +160,7 @@ const FieldRow = memo(function FieldRow({
   return (
     <div
       className={cn(
-        'grid grid-cols-[2rem_1fr_minmax(12rem,20rem)] items-start gap-3 px-3 py-2.5 rounded-lg transition-colors',
+        'grid grid-cols-[2rem_1fr_15rem] items-start gap-3 px-3 py-2.5 rounded-lg transition-colors',
         locked ? '' : 'hover:bg-muted/40',
         validationError && 'bg-destructive/5'
       )}
@@ -203,7 +203,7 @@ const FieldRow = memo(function FieldRow({
       </div>
 
       {/* Value editor */}
-      <div className="min-w-0">
+      <div className="min-w-0 overflow-hidden">
         {children}
         {validationError && (
           <p className="text-xs text-destructive mt-1 flex items-center gap-1">
@@ -282,9 +282,9 @@ function MultiSelect({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-border bg-popover shadow-md p-1">
+          <div className="absolute z-50 mt-1 w-full max-h-[min(20rem,50vh)] overflow-y-auto overflow-x-hidden rounded-lg border border-border bg-popover shadow-md p-1">
             {showFilter && (
-              <div className="flex items-center gap-2 px-2 pb-1.5 border-b border-border mb-1">
+              <div className="sticky top-0 z-10 flex items-center gap-2 px-2 pb-1.5 border-b border-border mb-1 bg-popover">
                 <input
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
@@ -316,7 +316,7 @@ function MultiSelect({
                       }
                     }}
                   />
-                  {opt.value}
+                  <span className="min-w-0 break-words">{opt.value}</span>
                 </label>
               );
             })}

@@ -65,6 +65,7 @@ Wszystkie zmienne ładowane z `.env.local` (plik w `.gitignore`). Szablon: [.env
 | `FAL_KEY` | tylko jeśli generujesz obrazy | Klucz FAL.ai (NanoBanana Pro, Flux) |
 | `REMOVEBG_API_KEY` | tylko jeśli usuwasz tło | remove.bg API |
 | `REPLICATE_API_TOKEN` | tylko jeśli używasz Replicate | Replicate.com |
+| `PHOTOROOM_API_KEY` | tylko jeśli używasz PhotoRoom | photoroom.com/api — usuń tło, zamień tło AI, relight, cień, upscale, expand, flat lay, ghost mannequin |
 | `FAL_MODEL_NANOBANANAPRO` | nie | Nadpisanie domyślnego modelu — np. `fal-ai/nanobananapro` |
 | `FAL_MODEL_FLUXCONTEXTPRO` | nie | Nadpisanie — np. `fal-ai/flux-pro/v1.1-ultra` |
 | `REPLICATE_MODEL_VERSION` | nie | Wersja modelu Replicate |
