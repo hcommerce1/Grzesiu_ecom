@@ -8,6 +8,7 @@ import { extractCostway } from './costway';
 import { extractWoltu } from './woltu';
 import { extractAllegro } from './allegro';
 import { extractVidaXL } from './vidaxl';
+import { extractFlexispot } from './flexispot';
 
 /**
  * Orchestrator Router: Resolves the domain from the URL and routes to the correct scraper.
@@ -31,6 +32,9 @@ export const getExtractorForUrl = (url: string): SiteExtractor => {
 
         if (hostname.includes('costway.')) {
             return extractCostway;
+        }
+        if (hostname.includes('flexispot.')) {
+            return extractFlexispot;
         }
         if (hostname.includes('woltu.')) {
             return extractWoltu;

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { ChevronLeft, ChevronRight, Tag } from "lucide-react"
 import type { ImageMeta, AllegroParameter } from "@/lib/types"
+import { DESCRIPTION_PREVIEW_CSS } from "@/lib/description-utils"
 
 interface AppPreviewProps {
   title: string
@@ -154,7 +155,7 @@ export function AppPreview({
                 <h2 className="text-lg font-semibold border-b border-border pb-1">Opis</h2>
                 <div
                   className="app-preview-prose text-sm leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: fullHtml }}
+                  dangerouslySetInnerHTML={{ __html: DESCRIPTION_PREVIEW_CSS + fullHtml }}
                 />
               </section>
             )}

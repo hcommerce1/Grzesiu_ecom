@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
-import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, X, CheckCircle2, ImageIcon, AlertCircle, Link2, AlertTriangle, ChevronLeft, ChevronRight, History, Settings, Target, Check, HelpCircle } from "lucide-react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
+import { Settings2, Tag, CheckSquare, Eye, Send, RefreshCw, Loader2, X, CheckCircle2, ImageIcon, AlertCircle, Link2, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, History, Settings, Target, Check, HelpCircle } from "lucide-react"
 import { CategorySelector } from "./CategorySelector"
 import { FieldsAndParametersStep } from "./FieldsAndParametersStep"
 import { ApprovalDrawer } from "./ApprovalDrawer"
@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils"
 import { useEditProgressStore } from "@/lib/stores/edit-progress-store"
 import { toast } from "sonner"
 import { compileSectionsToHtml, buildInputSnapshot, classifyChangesDetailed } from "@/lib/description-utils"
+import { DescriptionEditor } from "./DescriptionEditor"
 import { DEFAULT_DESCRIPTION_PROMPT } from "@/lib/description-prompt"
 import type {
   ProductSession,
@@ -31,7 +32,6 @@ import type {
   DescriptionInputSnapshot,
   AutoFillEntry,
   BLProductType,
-  TargetableSection,
   ChatAction,
   DescriptionVersion,
   ChangeClassification,
@@ -64,7 +64,6 @@ const STEPS: { key: Step; label: string; icon: React.ReactNode }[] = [
   { key: "images", label: "Zdjęcia", icon: <ImageIcon className="size-3.5" /> },
   { key: "fields-params", label: "Parametry", icon: <CheckSquare className="size-3.5" /> },
   { key: "preview", label: "Podgląd", icon: <Eye className="size-3.5" /> },
-  { key: "approval", label: "Wyślij", icon: <Send className="size-3.5" /> },
 ]
 
 export function BaselinkerWorkflowPanel({ productData, editProductId, editProductType, editParentId, onClose, sheetProductId, sheetMeta, onSheetDone, onSaveTemplate, onSubmitSuccess }: Props) {
@@ -129,6 +128,15 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   // Reference URL scraping (for edit mode)
   const [referenceUrl, setReferenceUrl] = useState(productData.url ?? '')
   const [scrapeLoading, setScrapeLoading] = useState(false)
+  const [rawContentExpanded, setRawContentExpanded] = useState(false)
+  const [rawContent, setRawContent] = useState('')
+  const [rawScrapeLoading, setRawScrapeLoading] = useState(false)
+  const [collapsedSections, setCollapsedSections] = useState<Set<Step>>(new Set(['inventory']))
+  const toggleSection = (s: Step) => setCollapsedSections(prev => {
+    const next = new Set(prev)
+    next.has(s) ? next.delete(s) : next.add(s)
+    return next
+  })
 
   const handleScrapeReferenceUrl = async () => {
     if (!referenceUrl.trim()) return
@@ -204,6 +212,57 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }
 
+  const handleScrapeRawContent = async () => {
+    if (!rawContent.trim()) return
+    setRawScrapeLoading(true)
+    try {
+      const res = await fetch('/api/scrape-raw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawContent: rawContent.trim(), url: productData.url || referenceUrl }),
+      })
+      const scraped = await res.json()
+      if (!scraped.success) throw new Error(scraped.error ?? 'Ekstrakcja nie powiodła się')
+
+      const scrapedData = scraped.data as import('@/lib/types').ProductData
+
+      if (scrapedData.attributes && Object.keys(scrapedData.attributes).length > 0) {
+        const autofillRes = await fetch('/api/ai-autofill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            productData: { ...productData, attributes: { ...productData.attributes, ...scrapedData.attributes } },
+            parameters,
+            alreadyFilled: localParameters,
+          }),
+        })
+        if (autofillRes.ok) {
+          const autofillData = await autofillRes.json()
+          const filled: Record<string, string | string[]> = autofillData.filled ?? {}
+          if (Object.keys(filled).length > 0) {
+            setLocalParameters(prev => {
+              const merged = { ...prev, ...filled }
+              updateSession({ filledParameters: merged })
+              return merged
+            })
+          }
+        }
+      }
+
+      if (scrapedData.description && session?.data) {
+        updateSession({ data: { ...session.data, description: scrapedData.description } })
+      }
+
+      setRawContentExpanded(false)
+      setRawContent('')
+      toast.success('Wyekstrahowano dane z wklejonej treści')
+    } catch (e) {
+      toast.error(`Błąd ekstrakcji: ${String(e)}`)
+    } finally {
+      setRawScrapeLoading(false)
+    }
+  }
+
   // Debounced session sync refs
   const paramSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const extraFieldSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -217,16 +276,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }, [])
 
-  // Section targeting
-  const [targetedSections, setTargetedSections] = useState<TargetableSection[]>([])
-
-  const toggleTargetedSection = useCallback((section: TargetableSection) => {
-    setTargetedSections(prev => {
-      const exists = prev.find(s => s.id === section.id)
-      if (exists) return prev.filter(s => s.id !== section.id)
-      return [...prev, section]
-    })
-  }, [])
+  const [editingSections, setEditingSections] = useState(false)
 
   // ─── Description versioning (lifted from old DescriptionGenerationStep) ───
   const [descriptionVersions, setDescriptionVersions] = useState<DescriptionVersion[]>([])
@@ -382,7 +432,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
 
   // Navigation & validation
   const [maxVisitedStep, setMaxVisitedStep] = useState(0)
-  const [validationErrors, setValidationErrors] = useState<string[]>([])
 
   useEffect(() => {
     loadBLCache()
@@ -393,18 +442,21 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       .then((r) => r.json())
       .then((d) => {
         setSession(d.session)
-        // Sprawdź czy sesja dotyczy tego samego produktu
+        // Sprawdź czy sesja dotyczy tego samego produktu.
+        // Jeśli używamy productKey (sheets products), sesja jest zawsze właściwa — skip URL check.
         const sessionMatchesProduct = d.session && (
-          editProductId
-            ? d.session.product_id === editProductId
-            : d.session.data?.url === productData.url
+          productKey
+            ? true
+            : editProductId
+              ? d.session.product_id === editProductId
+              : d.session.data?.url === productData.url
         )
         // Przywroc dane z sesji tylko jesli dotycza tego samego produktu
         if (sessionMatchesProduct) {
           if (d.session.imagesMeta) {
             setImagesMeta(d.session.imagesMeta)
           }
-          if (d.session.generatedTitle) { setLocalTitle(d.session.generatedTitle); setIsTitleGenerated(true) }
+          if (d.session.generatedTitle) { setLocalTitle(d.session.generatedTitle.slice(0, 75)); setIsTitleGenerated(true) }
           if (d.session.titleCandidates) setTitleCandidates(d.session.titleCandidates)
           if (d.session.generatedDescription) setGeneratedDescription(d.session.generatedDescription)
           if (d.session.descriptionInputSnapshot) setDescriptionSnapshot(d.session.descriptionInputSnapshot)
@@ -616,6 +668,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         ...(sheetMeta ? { sheetMeta } : {}),
         fieldSelection: sheetFieldOverrides,
       })
+      setCollapsedSections(prev => { const n = new Set(prev); n.add('inventory'); return n; })
       goToStep("category")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Błąd")
@@ -731,8 +784,11 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       const fetchedParams: AllegroParameter[] = paramsData.parameters ?? []
       if (fetchedParams.length > 0) {
         setAiFillStatus('loading')
+        const autofillAc = new AbortController()
+        const autofillTimeout = setTimeout(() => autofillAc.abort(), 30_000)
         fetch("/api/ai-autofill", {
           method: "POST",
+          signal: autofillAc.signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             productData,
@@ -779,6 +835,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             setAiFillStatus('error')
             toast.error("Błąd AI auto-fill parametrów")
           })
+          .finally(() => clearTimeout(autofillTimeout))
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Błąd pobierania parametrów")
@@ -791,7 +848,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     await updateSession({ fieldSelection: selection })
   }
 
-  function buildFieldValues(): Record<string, string> {
+  const fieldValues = useMemo((): Record<string, string> => {
     const attrs = productData.attributes ?? {}
     const manufacturer =
       editableFieldValues['manufacturer_id'] || attrs["Marka"] || attrs["Producent"] || attrs["Manufacturer"] || attrs["Brand"] || ""
@@ -822,7 +879,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         : "",
       weight,
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localTitle, editableFieldValues, localTaxRate, isBundle, generatedDescription?.sections?.length, imagesMeta, localParameters, session?.allegroCategory?.id])
 
   // Synchronizacja parametrów z czatu do sesji
   function handleParameterChangeFromChat(id: string, value: string | string[]) {
@@ -918,26 +976,9 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     }
   }
 
-  function navigateToStep(targetIndex: number) {
-    setValidationErrors([])
-    // Going backwards — always allowed if visited before
-    if (targetIndex <= currentStepIndex) {
-      goToStep(STEPS[targetIndex].key)
-      return
-    }
-    // Going forward — validate each step in between
-    for (let i = currentStepIndex; i < targetIndex; i++) {
-      const result = validateStep(i)
-      if (!result.valid) {
-        setValidationErrors(result.errors)
-        return
-      }
-    }
-    goToStep(STEPS[targetIndex].key)
-  }
 
-  function renderStep() {
-    switch (currentStep) {
+  function renderStep(step?: Step) {
+    switch (step ?? currentStep) {
       case "inventory":
         return (
           <div className="space-y-4">
@@ -1020,7 +1061,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               disabled={loading || !selectedInventoryId}
               className="w-full"
             >
-              Dalej →
+              Potwierdź →
             </Button>
           </div>
         )
@@ -1064,6 +1105,41 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 </div>
               </div>
             )}
+            {/* Raw content fallback — wklej HTML/tekst strony gdy scraping dał słabe wyniki */}
+            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5 space-y-2">
+              <button
+                type="button"
+                onClick={() => setRawContentExpanded(v => !v)}
+                className="flex items-center justify-between w-full text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <span className="flex items-center gap-1.5">
+                  <ChevronRight className={cn("size-3.5 transition-transform", rawContentExpanded && "rotate-90")} />
+                  Wklej treść strony (fallback gdy scraping dał słaby wynik)
+                </span>
+              </button>
+              {rawContentExpanded && (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">Zaznacz całą treść strony (Ctrl+A) i wklej tutaj. AI wyekstrahuje dane produktu.</p>
+                  <textarea
+                    value={rawContent}
+                    onChange={e => setRawContent(e.target.value)}
+                    rows={6}
+                    className="w-full text-xs border border-border rounded px-2.5 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+                    placeholder="Wklej całą treść strony produktowej..."
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleScrapeRawContent}
+                    disabled={!rawContent.trim() || rawScrapeLoading}
+                    className="text-xs h-auto py-1.5 px-3"
+                  >
+                    {rawScrapeLoading ? <Loader2 className="size-3.5 animate-spin mr-1" /> : null}
+                    {rawScrapeLoading ? 'Ekstraktuję...' : 'Ekstraktuj AI →'}
+                  </Button>
+                </div>
+              )}
+            </div>
             <CategorySelector onSelect={handleCategorySelect} onReset={handleCategoryReset} selectedCategory={session?.allegroCategory} productData={productData} productId={sheetProductId ?? editProductId} />
             {editProductId && !session?.allegroCategory && (
               <button
@@ -1089,27 +1165,19 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 updateSession({ imagesMeta: meta })
               }}
             />
-            <Button
-              onClick={() => goToStep("fields-params")}
-              disabled={imagesMeta.filter(i => !i.removed).length === 0 && productData.images.length === 0}
-              className="w-full"
-            >
-              Dalej →
-            </Button>
           </div>
         )
 
       case "fields-params":
         return (
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">Skonfiguruj pola i parametry oferty:</p>
             <FieldsAndParametersStep
               mode={session?.mode ?? "new"}
               extraFields={(blCache?.extraFields ?? []) as BLExtraField[]}
               parameters={parameters}
               initialFieldSelection={session?.fieldSelection}
               initialParameterValues={localParameters}
-              fieldValues={buildFieldValues()}
+              fieldValues={fieldValues}
               onFieldSelectionChange={handleFieldsChange}
               onParameterValuesChange={handleParameterValuesChange}
               isTitleGenerated={isTitleGenerated}
@@ -1130,10 +1198,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               manufacturers={(blCache?.manufacturers ?? []) as { manufacturer_id: number; name: string }[]}
               isEditMode={!!editProductId}
             />
-            <Button onClick={() => goToStep("preview")} className="w-full gap-2">
-              <Eye className="size-4" />
-              Podgląd i opis →
-            </Button>
           </div>
         )
 
@@ -1176,7 +1240,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         }
 
         const sections = generatedDescription?.sections ?? []
-        const isTitleTargeted = targetedSections.some(s => s.id === 'title')
         const missingRequired = parameters.filter(p => p.required && !localParameters[p.id])
 
         return (
@@ -1186,7 +1249,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
                 <AlertTriangle className="size-4 shrink-0 mt-0.5" />
                 <span>
-                  Brakuje <strong>{missingRequired.length}</strong> wymaganych parametrów. Wróć do kroku &bdquo;Parametry&rdquo; lub poproś asystenta, żeby je uzupełnił.
+                  Brakuje <strong>{missingRequired.length}</strong> wymaganych parametrów — uzupełnij je w sekcji Parametry powyżej.
                 </span>
               </div>
             )}
@@ -1274,33 +1337,19 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Tytuł aukcji
                 </label>
-                <div className="flex items-center gap-2">
-                  <span className={cn(
-                    "text-xs",
-                    localTitle.length > 75 ? "text-destructive font-semibold" : "text-muted-foreground"
-                  )}>
-                    {localTitle.length}/75
-                  </span>
-                  <button
-                    onClick={() => toggleTargetedSection({ id: 'title', label: 'Tytuł', type: 'title' })}
-                    className={cn(
-                      "flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors",
-                      isTitleTargeted
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border text-muted-foreground hover:border-primary/40"
-                    )}
-                    title="Zaznacz żeby asystent edytował tylko tytuł"
-                  >
-                    <Target className="size-2.5" />
-                    {isTitleTargeted ? 'Zaznaczono' : 'Zaznacz'}
-                  </button>
-                </div>
+                <span className={cn(
+                  "text-xs",
+                  localTitle.length > 75 ? "text-destructive font-semibold" : "text-muted-foreground"
+                )}>
+                  {localTitle.length}/75
+                </span>
               </div>
               <input
                 type="text"
                 value={localTitle}
+                maxLength={75}
                 onChange={(e) => {
-                  setLocalTitle(e.target.value)
+                  setLocalTitle(e.target.value.slice(0, 75))
                   setIsTitleGenerated(true)
                 }}
                 onBlur={() => updateSession({ generatedTitle: localTitle }).catch(() => {/* non-fatal */})}
@@ -1328,64 +1377,46 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
               )}
             </div>
 
-            {/* ═══ Sekcje opisu — klikalne chipsy do targetingu ═══ */}
+            {/* ═══ Edycja sekcji inline ═══ */}
             {sections.length > 0 && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Sekcje opisu ({sections.length})
-                  </label>
-                  {targetedSections.length > 0 && (
-                    <button
-                      onClick={() => setTargetedSections([])}
-                      className="text-[10px] text-muted-foreground hover:text-foreground underline"
-                    >
-                      Wyczyść zaznaczenie
-                    </button>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {sections.map((s) => {
-                    const isTargeted = targetedSections.some(t => t.id === s.id)
-                    return (
-                      <button
-                        key={s.id}
-                        onClick={() => toggleTargetedSection({ id: s.id, label: s.heading || 'Sekcja', type: 'description-section' })}
-                        className={cn(
-                          "flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border transition-colors",
-                          isTargeted
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border text-muted-foreground hover:border-primary/40"
-                        )}
-                      >
-                        <Target className="size-2.5" />
-                        {s.heading || 'Bez tytułu'}
-                      </button>
-                    )
-                  })}
-                </div>
-                {targetedSections.length > 0 && (
-                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
-                    <HelpCircle className="size-3" />
-                    Zaznaczone sekcje trafią w prefix wiadomości do asystenta (&bdquo;[Dotyczy: …]&rdquo;).
-                  </p>
-                )}
+              <button
+                onClick={() => setEditingSections(v => !v)}
+                className="text-[10px] text-muted-foreground hover:text-foreground underline text-left"
+              >
+                {editingSections ? 'Ukryj edytor sekcji' : 'Edytuj sekcje opisu'}
+              </button>
+            )}
+
+            {/* ═══ Edycja sekcji inline ═══ */}
+            {editingSections && sections.length > 0 && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Edytuj sekcje</p>
+                {sections.map((s) => (
+                  <div key={s.id} className="space-y-1.5 rounded-md border border-border bg-background p-3">
+                    <input
+                      className="w-full rounded border border-border bg-transparent px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-primary"
+                      value={s.heading}
+                      placeholder="Nagłówek sekcji"
+                      onChange={(e) => handleChatSectionUpdate(s.id, e.target.value, undefined)}
+                    />
+                    <DescriptionEditor
+                      value={s.bodyHtml}
+                      onChange={(html) => handleChatSectionUpdate(s.id, undefined, html)}
+                      className="min-h-[80px] text-sm"
+                    />
+                  </div>
+                ))}
               </div>
             )}
 
             {/* ═══ Podgląd marketplace ═══ */}
             {generatedDescription?.fullHtml ? (
               <>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-xs text-muted-foreground">
-                    {generatedDescription.generatedAt
-                      ? `Wygenerowano: ${new Date(generatedDescription.generatedAt).toLocaleString()}`
-                      : 'Wygenerowany opis'}
-                  </div>
+                <div className="flex items-center justify-end mb-3">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={triggerRegeneration}
+                    onClick={() => { triggerRegeneration(); setTimeout(runGeneration, 0) }}
                     disabled={isGeneratingDesc}
                     className="gap-1.5"
                   >
@@ -1422,7 +1453,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                       variant="outline"
                       size="sm"
                       className="mt-3"
-                      onClick={triggerRegeneration}
+                      onClick={runGeneration}
                     >
                       Spróbuj ponownie
                     </Button>
@@ -1430,29 +1461,18 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 </div>
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
-                <Loader2 className="size-6 mx-auto mb-2 animate-spin opacity-50" />
-                Przygotowuję generowanie opisu…
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-10 text-center">
+                <p className="text-sm text-muted-foreground mb-4">Kliknij przycisk, żeby wygenerować tytuł i opis produktu.</p>
+                <Button onClick={runGeneration} disabled={!session?.allegroCategory?.id}>
+                  <RefreshCw className="size-3.5 mr-1.5" />
+                  Generuj opis
+                </Button>
+                {!session?.allegroCategory?.id && (
+                  <p className="text-xs text-muted-foreground mt-2">Najpierw wybierz kategorię Allegro</p>
+                )}
               </div>
             )}
 
-            <Button
-              onClick={async () => {
-                await updateSession({
-                  data: {
-                    ...productData,
-                    title: localTitle,
-                    description: generatedDescription?.fullHtml || productData.description,
-                    images: imagesMeta.filter(i => !i.removed).map(i => i.url),
-                  },
-                })
-                goToStep("approval")
-              }}
-              disabled={!generatedDescription?.fullHtml}
-              className="w-full"
-            >
-              Zatwierdź i wyślij →
-            </Button>
           </div>
         )
       }
@@ -1487,18 +1507,14 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
                 <Button variant="outline" onClick={onClose}>Zamknij</Button>
               </div>
             ) : (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  Sprawdź dane i zatwierdź wysyłkę do BaseLinker.
-                </p>
-                <Button
-                  onClick={() => setShowApproval(true)}
-                  className="w-full gap-2"
-                >
-                  <Send className="size-4" />
-                  Otwórz bramkę zatwierdzenia
-                </Button>
-              </>
+              <Button
+                onClick={() => setShowApproval(true)}
+                className="w-full gap-2"
+                size="lg"
+              >
+                <Send className="size-4" />
+                Wyślij do BaseLinker
+              </Button>
             )}
           </div>
         )
@@ -1516,7 +1532,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         break
       case 'update_title':
         if (action.title) {
-          setLocalTitle(action.title)
+          setLocalTitle(action.title.slice(0, 75))
           setIsTitleGenerated(true)
           updateSession({ generatedTitle: action.title }).catch(() => {/* non-fatal */})
         }
@@ -1645,10 +1661,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         }
         break
 
-      // ─── Targeting & ask ───
-      case 'clear_targets':
-        setTargetedSections([])
-        break
       case 'ask_user':
         // AgentPanel renders the question in the chat stream (action is primarily informational here)
         // Nothing to do in panel state — question is already visible to user.
@@ -1690,98 +1702,74 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   }
 
   // ─── Auto-generate tytuł + opis przy wejściu na zakładkę Podgląd ───
-  // Wywołuje 2 endpointy sekwencyjnie. Anti-loop guard po klucz: cat:imgCount:paramsCount.
-  // AbortController żeby przerwać gdy user opuści Podgląd przed ukończeniem.
-  useEffect(() => {
-    if (currentStep !== 'preview') return
+  // Generowanie tytułu i opisu — wywoływane TYLKO z przycisku, nigdy automatycznie.
+  const runGeneration = useCallback(async () => {
     if (!session?.allegroCategory?.id) {
-      setGenerationError('Wybierz kategorię w zakładce „Kategoria" zanim wygenerujesz opis.')
+      toast.error('Najpierw wybierz kategorię Allegro')
       return
     }
-    if (generatedDescription?.fullHtml) return // Już mamy opis — nie regeneruj automatycznie
     if (isGeneratingDesc) return
 
-    // E6: walidacja braków przed odpaleniem generacji.
-    const noParameters = Object.keys(localParameters).length === 0
-    const imagesWithoutDesc = imagesMeta.filter(m => !m.removed && !(m.aiDescription || '').trim()).length
-    const hasIssues = noParameters || imagesWithoutDesc > 0
-    if (hasIssues && !validationOverride) {
-      setShowValidationModal(true)
-      return
-    }
-
-    const validImagesCount = imagesMeta.filter(m => !m.removed && (m.aiConfidence ?? 0) > 0).length
-    const filledKeys = Object.keys(localParameters).length
-    const key = `${session.allegroCategory.id}:${validImagesCount}:${filledKeys}:${localTitle.length}`
-    if (lastGeneratedKey.current === key) return
-    lastGeneratedKey.current = key
-
+    if (generationAbortRef.current) generationAbortRef.current.abort()
     const ac = new AbortController()
     generationAbortRef.current = ac
 
-    ;(async () => {
-      setIsGeneratingDesc(true)
-      setGenerationError(null)
-      try {
-        const productId = sheetProductId ?? editProductId ?? 'local'
-        const sessionForApi: ProductSession = {
-          ...session,
-          filledParameters: localParameters,
-          generatedTitle: isTitleGenerated ? localTitle : undefined,
-        }
+    setIsGeneratingDesc(true)
+    setGenerationError(null)
+    try {
+      const productId = sheetProductId ?? editProductId ?? 'local'
+      const sessionForApi: ProductSession = {
+        ...session,
+        filledParameters: localParameters,
+        generatedTitle: isTitleGenerated ? localTitle : undefined,
+      }
 
-        // 1. Tytuł — tylko jeśli jeszcze nie wygenerowany przez user/AI
-        if (!isTitleGenerated || !localTitle?.trim()) {
-          const titleRes = await fetch('/api/generate-title', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: ac.signal,
-            body: JSON.stringify({ session: sessionForApi, imagesMeta, productId }),
-          })
-          if (!titleRes.ok) throw new Error(`Tytuł: HTTP ${titleRes.status}`)
-          const titleData = await titleRes.json()
-          if (titleData.title) {
-            setLocalTitle(titleData.title)
-            setIsTitleGenerated(true)
-            setTitleCandidates(titleData.candidates ?? [])
-            await updateSession({
-              generatedTitle: titleData.title,
-              titleCandidates: titleData.candidates ?? [],
-            }).catch(() => {})
-            sessionForApi.generatedTitle = titleData.title
-          }
-        }
-
-        // 2. Opis
-        const descRes = await fetch('/api/generate-description', {
+      // 1. Tytuł — tylko jeśli jeszcze nie wygenerowany przez user/AI
+      if (!isTitleGenerated || !localTitle?.trim()) {
+        const titleRes = await fetch('/api/generate-title', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: ac.signal,
           body: JSON.stringify({ session: sessionForApi, imagesMeta, productId }),
         })
-        if (!descRes.ok) throw new Error(`Opis: HTTP ${descRes.status}`)
-        const descData = await descRes.json()
-        if (descData.error) throw new Error(descData.error)
-
-        handleAgentDescriptionGenerated(descData.sections, descData.fullHtml, descData.inputSnapshot)
-        if (descData.warning) toast.warning(descData.warning)
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') return
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error('[auto-generate]', msg)
-        setGenerationError(msg)
-        toast.error(`Błąd generowania: ${msg}`)
-      } finally {
-        setIsGeneratingDesc(false)
-        if (generationAbortRef.current === ac) generationAbortRef.current = null
+        if (!titleRes.ok) throw new Error(`Tytuł: HTTP ${titleRes.status}`)
+        const titleData = await titleRes.json()
+        if (titleData.title) {
+          setLocalTitle(titleData.title)
+          setIsTitleGenerated(true)
+          setTitleCandidates(titleData.candidates ?? [])
+          await updateSession({
+            generatedTitle: titleData.title,
+            titleCandidates: titleData.candidates ?? [],
+          }).catch(() => {})
+          sessionForApi.generatedTitle = titleData.title
+        }
       }
-    })()
 
-    return () => {
-      ac.abort()
+      // 2. Opis
+      const descRes = await fetch('/api/generate-description', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ac.signal,
+        body: JSON.stringify({ session: sessionForApi, imagesMeta, productId }),
+      })
+      if (!descRes.ok) throw new Error(`Opis: HTTP ${descRes.status}`)
+      const descData = await descRes.json()
+      if (descData.error) throw new Error(descData.error)
+
+      handleAgentDescriptionGenerated(descData.sections, descData.fullHtml, descData.inputSnapshot)
+      if (descData.warning) toast.warning(descData.warning)
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return
+      const msg = err instanceof Error ? err.message : String(err)
+      setGenerationError(msg)
+      toast.error(`Błąd generowania: ${msg}`)
+    } finally {
+      setIsGeneratingDesc(false)
+      if (generationAbortRef.current === ac) generationAbortRef.current = null
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStep, session?.allegroCategory?.id, generatedDescription?.fullHtml, validationOverride])
+  }, [session, localParameters, localTitle, isTitleGenerated, imagesMeta, sheetProductId, editProductId, isGeneratingDesc])
 
   // Ręczna regeneracja opisu: abort + reset stanu → useEffect powyżej odpali ponownie.
   const triggerRegeneration = useCallback(() => {
@@ -1796,7 +1784,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     setGenerationError(null)
     setIsGeneratingDesc(false)
     setGeneratedDescription(undefined)
-    setValidationOverride(false) // user może zmienić uzupełnienie między regeneracjami
+    setValidationOverride(false)
+    // Generacja startuje z przycisku — runGeneration wywoływane przez onClick
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generatedDescription, localTitle])
 
@@ -1923,6 +1912,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
     [parameters, localParameters],
   )
 
+  const selectedInvName = blCache?.inventories?.find((inv) => inv.inventory_id === selectedInventoryId)?.name
+
   return (
     <>
       <div>
@@ -1943,16 +1934,6 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             </div>
             <div className="flex items-center gap-2">
               <TokenCostBadge productId={sheetProductId ?? editProductId ?? 'local'} />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowResetConfirm(true)}
-                className="gap-1.5 text-xs text-muted-foreground hover:text-destructive"
-                title="Skasuj cały dotychczasowy progres dla tego produktu"
-              >
-                <RefreshCw className="size-3.5" />
-                Zacznij od nowa
-              </Button>
               <button
                 onClick={onClose}
                 className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
@@ -1962,51 +1943,126 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             </div>
           </div>
 
-          {/* Step navigation */}
-          <div className="flex border-b overflow-x-auto scrollbar-hide">
-            {STEPS.map((step, i) => {
-              const isDone = i < currentStepIndex
-              const isActive = step.key === currentStep
-              const isClickable = i <= maxVisitedStep || i === maxVisitedStep + 1
-              const label = (step.key === 'approval' && onSaveTemplate) ? 'Zapisz template' : step.label
-
-              return (
-                <button
-                  key={step.key}
-                  onClick={() => isClickable && navigateToStep(i)}
-                  className={cn(
-                    "flex-1 flex items-center justify-center gap-1 px-2 py-2.5 text-[11px] font-medium transition-colors whitespace-nowrap min-w-max",
-                    isActive
-                      ? "text-primary border-b-2 border-primary bg-accent/30"
-                      : isDone
-                      ? "text-green-600 hover:bg-muted cursor-pointer"
-                      : isClickable
-                      ? "text-muted-foreground hover:bg-muted/50 cursor-pointer"
-                      : "text-muted-foreground/60 cursor-default"
+          {/* One-page flow — all sections collapsible */}
+          <div>
+            {/* Magazyn */}
+            <div className="border-b">
+              <button
+                className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold hover:bg-muted/30 transition-colors"
+                onClick={() => toggleSection('inventory')}
+              >
+                <span className="flex items-center gap-2">
+                  <Settings2 className="size-3.5 text-muted-foreground" />
+                  Magazyn
+                  {collapsedSections.has('inventory') && selectedInvName && (
+                    <span className="font-normal text-xs text-muted-foreground ml-1">— {selectedInvName}</span>
                   )}
-                >
-                  {isDone ? <CheckCircle2 className="size-3.5 text-green-600 shrink-0" /> : step.icon}
-                  <span>{label}</span>
-                </button>
-              )
-            })}
-          </div>
-
-          {/* Validation errors */}
-          {validationErrors.length > 0 && (
-            <div className="mx-5 mt-3 flex items-start gap-2 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg border border-destructive/20">
-              <AlertCircle className="size-4 shrink-0 mt-0.5" />
-              <div>
-                {validationErrors.map((err, i) => (
-                  <p key={i}>{err}</p>
-                ))}
-              </div>
+                </span>
+                {collapsedSections.has('inventory')
+                  ? <ChevronRight className="size-4 text-muted-foreground" />
+                  : <ChevronDown className="size-4 text-muted-foreground" />}
+              </button>
+              {!collapsedSections.has('inventory') && (
+                <div className="px-5 pb-5">
+                  {renderStep('inventory')}
+                </div>
+              )}
             </div>
-          )}
 
-          {/* Step content */}
-          <div className="p-5">
-            {renderStep()}
+            {/* Kategoria */}
+            <div className="border-b">
+              <button
+                className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold hover:bg-muted/30 transition-colors"
+                onClick={() => toggleSection('category')}
+              >
+                <span className="flex items-center gap-2">
+                  <Tag className="size-3.5 text-muted-foreground" />
+                  Kategoria
+                  {collapsedSections.has('category') && session?.allegroCategory?.name && (
+                    <span className="font-normal text-xs text-muted-foreground ml-1 truncate max-w-[300px]">— {session.allegroCategory.name}</span>
+                  )}
+                </span>
+                {collapsedSections.has('category')
+                  ? <ChevronRight className="size-4 text-muted-foreground" />
+                  : <ChevronDown className="size-4 text-muted-foreground" />}
+              </button>
+              {!collapsedSections.has('category') && (
+                <div className="px-5 pb-5">
+                  {renderStep('category')}
+                </div>
+              )}
+            </div>
+
+            {/* Zdjęcia */}
+            <div className="border-b">
+              <button
+                className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold hover:bg-muted/30 transition-colors"
+                onClick={() => toggleSection('images')}
+              >
+                <span className="flex items-center gap-2">
+                  <ImageIcon className="size-3.5 text-muted-foreground" />
+                  Zdjęcia
+                  {collapsedSections.has('images') && imagesMeta.filter(i => !i.removed).length > 0 && (
+                    <span className="font-normal text-xs text-muted-foreground ml-1">— {imagesMeta.filter(i => !i.removed).length} szt.</span>
+                  )}
+                </span>
+                {collapsedSections.has('images')
+                  ? <ChevronRight className="size-4 text-muted-foreground" />
+                  : <ChevronDown className="size-4 text-muted-foreground" />}
+              </button>
+              {!collapsedSections.has('images') && (
+                <div className="px-5 pb-5">
+                  {renderStep('images')}
+                </div>
+              )}
+            </div>
+
+            {/* Parametry */}
+            <div className="border-b">
+              <button
+                className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold hover:bg-muted/30 transition-colors"
+                onClick={() => toggleSection('fields-params')}
+              >
+                <span className="flex items-center gap-2">
+                  <CheckSquare className="size-3.5 text-muted-foreground" />
+                  Parametry
+                </span>
+                {collapsedSections.has('fields-params')
+                  ? <ChevronRight className="size-4 text-muted-foreground" />
+                  : <ChevronDown className="size-4 text-muted-foreground" />}
+              </button>
+              {!collapsedSections.has('fields-params') && (
+                <div className="px-5 pb-5">
+                  {renderStep('fields-params')}
+                </div>
+              )}
+            </div>
+
+            {/* Opis */}
+            <div className="border-b">
+              <button
+                className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold hover:bg-muted/30 transition-colors"
+                onClick={() => toggleSection('preview')}
+              >
+                <span className="flex items-center gap-2">
+                  <Eye className="size-3.5 text-muted-foreground" />
+                  Opis
+                </span>
+                {collapsedSections.has('preview')
+                  ? <ChevronRight className="size-4 text-muted-foreground" />
+                  : <ChevronDown className="size-4 text-muted-foreground" />}
+              </button>
+              {!collapsedSections.has('preview') && (
+                <div className="px-5 pb-5">
+                  {renderStep('preview')}
+                </div>
+              )}
+            </div>
+
+            {/* Wyślij */}
+            <div className="px-5 pb-5 pt-2">
+              {renderStep('approval')}
+            </div>
           </div>
         </div>
 
@@ -2015,6 +2071,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       {showApproval && session && (
         <ApprovalDrawer
           session={session}
+          images={imagesMeta.filter(i => !i.removed).map(i => i.url)}
           onClose={() => setShowApproval(false)}
           onApproved={async (id) => {
             setSuccessId(id)

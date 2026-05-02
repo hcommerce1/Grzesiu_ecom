@@ -251,14 +251,7 @@ export function ImageManagementStep({ images, imagesMeta, onImagesMetaChange, pr
       {/* Sticky header */}
       <div className="sticky top-0 z-10 bg-card pb-3 space-y-3 border-b border-border -mx-5 px-5 pt-1">
         <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold">
-              Zdjęcia produktu ({activeImages.length})
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Przeciągaj, aby zmienić kolejność. Analizuj AI, aby opisać zdjęcia.
-            </p>
-          </div>
+          <span className="text-xs text-muted-foreground">{activeImages.length} zdjęć</span>
           <div className="flex items-center gap-2">
             {allowUpload && (
               <>

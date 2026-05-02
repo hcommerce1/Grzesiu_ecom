@@ -8,7 +8,7 @@ const TITLE_MODEL = process.env.TITLE_MODEL || 'claude-haiku-4-5-20251001';
 const SYSTEM_PROMPT = `Jesteś ekspertem od tworzenia tytułów aukcji na Allegro.
 
 ### Zasady tytułu:
-- Maksymalnie 75 znaków (wykorzystaj jak najwięcej)
+- TWARDY LIMIT: maksymalnie 75 znaków — nigdy nie przekraczaj, łącznie ze spacjami. Celuj w 70-75 znaków — im bliżej 75, tym lepiej. Tytuł krótszy niż 65 znaków jest słaby.
 - WIELKIE LITERY
 - Nie używaj znaków specjalnych (żadnych: !, *, +, emoji)
 - Tytuł ma być czytelny, konkretny i brzmieć naturalnie po polsku
@@ -104,11 +104,19 @@ export async function generateTitle(
   const data = await response.json();
   const usage: AnthropicUsage = data.usage ?? {};
   const raw = data.content?.[0]?.text || '{}';
-  const parsed = parseClaudeJson<{ title?: string; candidates?: unknown }>(raw);
+  let parsed: { title?: string; candidates?: unknown } = {};
+  try {
+    parsed = parseClaudeJson<{ title?: string; candidates?: unknown }>(raw);
+  } catch {
+    // AI returned non-JSON (e.g. apology text) — try extracting title from plain text
+    const firstLine = raw.split('\n')[0].trim().slice(0, 75);
+    if (firstLine && !firstLine.startsWith('{')) parsed = { title: firstLine };
+  }
 
+  const trim75 = (s: string) => s.trim().slice(0, 75);
   return {
-    title: parsed.title || '',
-    candidates: Array.isArray(parsed.candidates) ? parsed.candidates : [],
+    title: trim75(parsed.title || ''),
+    candidates: Array.isArray(parsed.candidates) ? parsed.candidates.map(c => trim75(String(c))) : [],
     usage,
   };
 }

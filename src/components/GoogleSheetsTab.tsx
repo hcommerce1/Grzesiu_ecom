@@ -129,7 +129,7 @@ const STATUS_CONFIG: Record<
   error: {
     label: "Błąd",
     color: "bg-red-50 text-red-700 border-red-200",
-    icon: <AlertCircle className="size-3" />,
+    icon: <XCircle className="size-3" />,
   },
 };
 
@@ -174,6 +174,7 @@ export function GoogleSheetsTab() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [doneExpanded, setDoneExpanded] = useState(false);
   const [urlDrafts, setUrlDrafts] = useState<Record<string, string>>({});
+  const [batchScraping, setBatchScraping] = useState(false);
 
   // Batch workflow state
   const [batch, setBatch] = useState<SheetsBatchState | null>(null);
@@ -306,6 +307,53 @@ export function GoogleSheetsTab() {
       });
     } catch {
       // silent — URL will be re-saved on next attempt
+    }
+  }
+
+  // ─── Auto-scrape on URL paste ───
+
+  async function autoScrapeOnPaste(productId: string, pastedUrl: string) {
+    setUrlDrafts((prev) => ({ ...prev, [productId]: pastedUrl }));
+    await saveUrl(productId, pastedUrl);
+    await fetch('/api/sheets/batch-scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [productId] }),
+    });
+    setTimeout(() => syncFromSheets(), 2000);
+  }
+
+  // ─── Batch scraping (background) ───
+
+  async function handleBatchScrape() {
+    const ids = Array.from(selected).filter(id => {
+      const p = active.find(p => p.id === id);
+      return p && (urlDrafts[id] || p.scrape_url);
+    });
+    if (ids.length === 0) return;
+    setBatchScraping(true);
+    try {
+      // Save URL drafts first
+      await Promise.all(
+        ids
+          .filter(id => urlDrafts[id])
+          .map(id =>
+            fetch(`/api/sheets/products/${encodeURIComponent(id)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scrape_url: urlDrafts[id] }),
+            })
+          )
+      );
+      await fetch('/api/sheets/batch-scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      // Refresh list after a moment
+      setTimeout(() => syncFromSheets(), 1500);
+    } finally {
+      setBatchScraping(false);
     }
   }
 
@@ -613,10 +661,10 @@ export function GoogleSheetsTab() {
       const cached = await res.json();
 
       if (cached.cached) {
-        // Restore per-product workflow session to global slot so the panel picks it up on mount
+        // Restore per-product workflow session to the correct per-product slot
         if (cached.workflowSession) {
           try {
-            await fetch("/api/product-session", {
+            await fetch(`/api/product-session?productKey=${encodeURIComponent(`sheet_${id}`)}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(cached.workflowSession),
@@ -886,10 +934,24 @@ export function GoogleSheetsTab() {
               )}
             </div>
             {selected.size > 0 && (
-              <Button size="sm" onClick={() => startBatch()} className="gap-1.5">
-                <ExternalLink className="size-3.5" />
-                Wystaw zaznaczone ({selected.size})
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleBatchScrape}
+                  disabled={batchScraping || !!batch}
+                  className="gap-1.5"
+                >
+                  {batchScraping
+                    ? <Loader2 className="size-3.5 animate-spin" />
+                    : <RefreshCw className="size-3.5" />}
+                  Scrapuj ({selected.size})
+                </Button>
+                <Button size="sm" onClick={() => startBatch()} className="gap-1.5">
+                  <ExternalLink className="size-3.5" />
+                  Wystaw zaznaczone ({selected.size})
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -1007,6 +1069,12 @@ export function GoogleSheetsTab() {
                                 }))
                               }
                               onBlur={(e) => saveUrl(product.id, e.target.value)}
+                              onPaste={(e) => {
+                                const pasted = e.clipboardData.getData('text').trim();
+                                if ((product.status === 'new' || product.status === 'error') && pasted.startsWith('http')) {
+                                  setTimeout(() => autoScrapeOnPaste(product.id, pasted), 100);
+                                }
+                              }}
                               placeholder="https://..."
                               className={cn(
                                 "w-full bg-background border rounded-md px-2.5 py-1.5 text-xs placeholder:text-muted focus:outline-none focus:border-primary",

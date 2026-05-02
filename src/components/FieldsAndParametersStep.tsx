@@ -160,7 +160,7 @@ const FieldRow = memo(function FieldRow({
   return (
     <div
       className={cn(
-        'grid grid-cols-[2rem_1fr_15rem] items-start gap-3 px-3 py-2.5 rounded-lg transition-colors',
+        'grid grid-cols-[20px_1fr_1fr] items-start gap-3 px-3 py-2.5 rounded-lg transition-colors',
         locked ? '' : 'hover:bg-muted/40',
         validationError && 'bg-destructive/5'
       )}
@@ -643,6 +643,30 @@ function FieldsAndParametersStepInner({
   isEditMode,
 }: FieldsAndParametersStepProps) {
   const parameters = rawParameters ?? [];
+  const [eanLookupLoading, setEanLookupLoading] = useState(false);
+
+  async function handleEanLookup() {
+    const sku = editableFieldValues?.['sku'] || fieldValues['sku'] || '';
+    if (!sku) return;
+    setEanLookupLoading(true);
+    try {
+      const res = await fetch('/api/ean-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sku }),
+      });
+      const data = await res.json();
+      if (data.ean) {
+        onEditableFieldValueChange?.('ean', data.ean);
+      } else {
+        alert(data.error || 'Nie znaleziono EAN');
+      }
+    } catch {
+      alert('Błąd szukania EAN');
+    } finally {
+      setEanLookupLoading(false);
+    }
+  }
 
   // Build a lookup for sheet match results by parameter ID
   const matchByParamId = useMemo(() =>
@@ -850,12 +874,24 @@ function FieldsAndParametersStepInner({
                 onToggle={toggleField}
               >
                 {checked && f.key === 'ean' && (
-                  <Input
-                    type="text"
-                    value={efvVal || fieldValues['ean'] || ''}
-                    onChange={(e) => onEditableFieldValueChange?.('ean', e.target.value)}
-                    placeholder="Kod EAN"
-                  />
+                  <div className="flex gap-1.5">
+                    <Input
+                      type="text"
+                      value={efvVal || fieldValues['ean'] || ''}
+                      onChange={(e) => onEditableFieldValueChange?.('ean', e.target.value)}
+                      placeholder="Kod EAN"
+                      className="flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleEanLookup}
+                      disabled={eanLookupLoading || !(editableFieldValues?.['sku'] || fieldValues['sku'])}
+                      title="Szukaj EAN po SKU na Amazon"
+                      className="shrink-0 px-2 py-1 text-xs border border-border rounded-md hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {eanLookupLoading ? <Loader className="size-3 animate-spin" /> : 'EAN↑SKU'}
+                    </button>
+                  </div>
                 )}
                 {checked && f.key === 'sku' && (
                   <Input
@@ -927,9 +963,8 @@ function FieldsAndParametersStepInner({
                 {checked && f.key === 'prices' && (
                   <div className="flex items-center gap-2">
                     <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      type="text"
+                      inputMode="decimal"
                       value={efvVal || fieldValues['prices']?.replace(/[^\d.,]/g, '') || ''}
                       onChange={(e) => onEditableFieldValueChange?.('prices', e.target.value)}
                       placeholder="0.00"

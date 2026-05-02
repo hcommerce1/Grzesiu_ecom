@@ -407,7 +407,7 @@ export async function buildCategoryTree(): Promise<FlatCategory[]> {
  * Handles: case-insensitive, Polish diacritics, typos (Levenshtein),
  * singular/plural forms, partial word matches.
  */
-export async function searchCategories(query: string, limit = 20): Promise<FlatCategory[]> {
+export async function searchCategories(query: string, limit = 20, leafOnly = false): Promise<FlatCategory[]> {
   const tree = await buildCategoryTree();
   const normalizedQuery = normalizePolish(query.toLowerCase().trim());
   const words = normalizedQuery.split(/\s+/).filter(Boolean);
@@ -424,18 +424,16 @@ export async function searchCategories(query: string, limit = 20): Promise<FlatC
     const stemmedPathWords = pathWords.map(stemPolish);
 
     let score = 0;
-    let allWordsMatch = true;
+    let firstWordMatched = false;
 
-    for (const sw of stemmedWords) {
+    for (let wi = 0; wi < stemmedWords.length; wi++) {
+      const sw = stemmedWords[wi];
+      const origWord = words[wi];
       let bestWordScore = 0;
 
       // Check exact substring match in name/path
-      if (normName.includes(words[stemmedWords.indexOf(sw)])) {
-        bestWordScore = Math.max(bestWordScore, 20);
-      }
-      if (normPath.includes(words[stemmedWords.indexOf(sw)])) {
-        bestWordScore = Math.max(bestWordScore, 10);
-      }
+      if (normName.includes(origWord)) bestWordScore = Math.max(bestWordScore, 20);
+      if (normPath.includes(origWord)) bestWordScore = Math.max(bestWordScore, 10);
 
       // Check stemmed match
       for (const snw of stemmedNameWords) {
@@ -457,14 +455,12 @@ export async function searchCategories(query: string, limit = 20): Promise<FlatC
         }
       }
 
-      if (bestWordScore === 0) {
-        allWordsMatch = false;
-        break;
-      }
+      if (wi === 0 && bestWordScore > 0) firstWordMatched = true;
       score += bestWordScore;
     }
 
-    if (!allWordsMatch) continue;
+    // Pierwsze słowo musi pasować (najważniejszy sygnał), reszta słów opcjonalna
+    if (!firstWordMatched) continue;
 
     // Exact full name match bonus
     if (normName === normalizedQuery) score += 100;
@@ -480,6 +476,7 @@ export async function searchCategories(query: string, limit = 20): Promise<FlatC
   }
 
   return scored
+    .filter(c => !leafOnly || c.leaf)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }

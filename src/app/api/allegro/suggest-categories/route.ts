@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-import { searchCategories, getCommissionInfo } from '@/lib/allegro';
+import { searchCategories } from '@/lib/allegro';
 import { logTokenUsage } from '@/lib/token-logger';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -69,9 +69,9 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 
     for (const term of searches.slice(0, 8)) {
       try {
-        const results = await searchCategories(term, 10);
+        const results = await searchCategories(term, 15, true);
         for (const cat of results) {
-          if (cat.leaf && !seenIds.has(cat.id)) {
+          if (!seenIds.has(cat.id)) {
             seenIds.add(cat.id);
             allResults.push(cat);
           }
@@ -81,22 +81,12 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
       }
     }
 
-    // Step 3: Fetch commission info for top results (max 5, with timeout)
-    // Ograniczamy do 5 żeby nie blokować serwera zbyt długo
-    const topResults = allResults.slice(0, 10);
-    const COMMISSION_BATCH = 5;
-    const commissionsRaw = await Promise.allSettled(
-      topResults.slice(0, COMMISSION_BATCH).map(cat => getCommissionInfo(cat.id))
-    );
-
-    const suggestions = topResults.map((cat, i) => ({
+    const suggestions = allResults.slice(0, 10).map(cat => ({
       id: cat.id,
       name: cat.name,
       path: cat.fullPath,
       leaf: true,
-      commission: i < COMMISSION_BATCH && commissionsRaw[i].status === 'fulfilled'
-        ? commissionsRaw[i].value
-        : null,
+      commission: null,
     }));
 
     return NextResponse.json({ suggestions });

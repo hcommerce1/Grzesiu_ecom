@@ -2,20 +2,23 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
-import { X, AlertTriangle, Send, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { X, AlertTriangle, Send, Loader2 } from 'lucide-react';
 import type { ProductSession } from '@/lib/types';
+import { DescriptionEditor } from './DescriptionEditor';
 
 interface ApprovalDrawerProps {
   session: ProductSession;
   onClose: () => void;
   onApproved: (productId: number) => void;
+  images?: string[];
 }
 
-export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerProps) {
+export function ApprovalDrawer({ session, onClose, onApproved, images: imagesProp }: ApprovalDrawerProps) {
   const [canSubmit, setCanSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [descExpanded, setDescExpanded] = useState(false);
+  const initialDesc = session.generatedDescription?.fullHtml || session.data?.description || '';
+  const [editedDesc, setEditedDesc] = useState(initialDesc);
 
   const isEdit = session.mode === 'edit';
 
@@ -28,6 +31,19 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
     setSubmitting(true);
     setError('');
     try {
+      // Save edited description to session before submitting
+      if (editedDesc !== initialDesc) {
+        await fetch('/api/product-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            generatedDescription: {
+              ...(session.generatedDescription ?? {}),
+              fullHtml: editedDesc,
+            },
+          }),
+        });
+      }
       const res = await fetch('/api/bl-submit', { method: 'POST' });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -40,7 +56,7 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
   }
 
   const sel = session.fieldSelection ?? {};
-  const images = session.images ?? session.data?.images ?? [];
+  const images = imagesProp ?? session.images ?? session.data?.images ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -139,32 +155,12 @@ export function ApprovalDrawer({ session, onClose, onApproved }: ApprovalDrawerP
             </Section>
           )}
 
-          {/* Description — preferuj wygenerowany strukturalny opis nad surowym scrape'em */}
-          {sel['description'] !== false && (() => {
-            const descSource = session.generatedDescription?.fullHtml || session.data?.description || ''
-            if (!descSource) return null
-            const descBody = descExpanded
-              ? descSource
-              : descSource.substring(0, 500) + (descSource.length > 500 ? '…' : '')
-            return (
-              <Section title="Opis">
-                <div>
-                  <div
-                    className={`text-sm text-muted-foreground ${descExpanded ? '' : 'line-clamp-3'}`}
-                    dangerouslySetInnerHTML={{ __html: descBody }}
-                  />
-                  {descSource.length > 200 && (
-                    <button
-                      onClick={() => setDescExpanded(!descExpanded)}
-                      className="flex items-center gap-1 text-xs text-accent mt-1.5 hover:underline"
-                    >
-                      {descExpanded ? <><ChevronUp className="w-3 h-3" />Zwiń</> : <><ChevronDown className="w-3 h-3" />Rozwiń</>}
-                    </button>
-                  )}
-                </div>
-              </Section>
-            )
-          })()}
+          {/* Description — edytowalny, zmiany trafiają do bl-submit */}
+          {sel['description'] !== false && initialDesc && (
+            <Section title="Opis">
+              <DescriptionEditor value={editedDesc} onChange={setEditedDesc} />
+            </Section>
+          )}
 
           {/* Inventory */}
           <Section title="Magazyn">

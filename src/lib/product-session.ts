@@ -271,7 +271,8 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
   // Prices — user override (keyed by price group ID, NOT warehouse)
   const priceGroupKey = session.defaultPriceGroup;
   if (fieldSelection?.prices && priceGroupKey) {
-    const priceVal = efv['prices'] ? parseFloat(efv['prices'].replace(',', '.')) : null;
+    const priceRaw = efv['prices'] ? String(efv['prices']).replace(/\s/g, '').replace(',', '.') : null;
+    const priceVal = priceRaw ? parseFloat(priceRaw) : null;
     if (priceVal && !isNaN(priceVal)) {
       payload['prices'] = { [priceGroupKey]: priceVal };
     }

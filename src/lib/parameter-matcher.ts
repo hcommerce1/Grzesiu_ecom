@@ -41,16 +41,14 @@ function levenshtein(a: string, b: string): number {
 
 // ─── Column → Parameter name mapping ───
 
+// Wymiary (waga/dlugosc/szerokosc/wysokosc) celowo pomijane — dane z arkusza to wymiary kartonu,
+// nie produktu. Trafiają wyłącznie do pól natywnych BL, nie do parametrów Allegro.
 const COLUMN_PARAM_MAP: Record<string, string[]> = {
   stanTechniczny: ['stan'],
   kolor: ['kolor'],
   opakowanie: ['opakowanie'],
   rozmiarGabaryt: ['rozmiar', 'gabaryt', 'wymiar'],
   model: ['model'],
-  waga: ['waga', 'masa'],
-  dlugosc: ['dlugosc', 'dlugos'],
-  szerokosc: ['szerokosc', 'szeroko'],
-  wysokosc: ['wysokosc', 'wysoko'],
 };
 
 // ─── Unit conversion helpers ───
@@ -261,16 +259,14 @@ export function matchSheetToParameters(
 
   // ─── Phase 1: Known columns (existing behavior) ───
 
+  // Wymiary (waga/dlugosc/szerokosc/wysokosc) celowo wykluczone — to wymiary kartonu,
+  // trafiają wyłącznie do pól natywnych BL, nie do parametrów Allegro.
   const columnsToMatch: string[] = [
     'stanTechniczny',
     'kolor',
     'opakowanie',
     'rozmiarGabaryt',
     'model',
-    'waga',
-    'dlugosc',
-    'szerokosc',
-    'wysokosc',
   ];
 
   for (const column of columnsToMatch) {
