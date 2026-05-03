@@ -79,6 +79,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   const [successId, setSuccessId] = useState<number | null>(null)
   const [selectedInventoryId, setSelectedInventoryId] = useState<number | undefined>()
   const [selectedWarehouse, setSelectedWarehouse] = useState<string | undefined>()
+  const [selectedPriceGroup, setSelectedPriceGroup] = useState<string | undefined>()
 
   // Tytuł
   const [localTitle, setLocalTitle] = useState(productData.title)
@@ -541,9 +542,9 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       if (!selectedWarehouse && data.cache.warehouses?.length > 0) {
         setSelectedWarehouse(data.cache.warehouses[0].warehouse_id)
       }
-      // Set default price group for agent (Bug 1 fix)
-      if (data.cache.priceGroups?.length > 0) {
-        updateSession({ defaultPriceGroup: String(data.cache.priceGroups[0].price_group_id) }).catch(() => {/* non-fatal */})
+      // Store default price group — included in handleInventoryConfirm's updateSession call
+      if (!selectedPriceGroup && data.cache.priceGroups?.length > 0) {
+        setSelectedPriceGroup(String(data.cache.priceGroups[0].price_group_id))
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Błąd bootstrap BaseLinker")
@@ -678,6 +679,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         images: productData.images,
         inventoryId: selectedInventoryId,
         defaultWarehouse: selectedWarehouse,
+        ...(selectedPriceGroup ? { defaultPriceGroup: selectedPriceGroup } : {}),
         ...editPatch,
         ...(sheetProductId ? { sheetProductId } : {}),
         ...(sheetMeta ? { sheetMeta } : {}),

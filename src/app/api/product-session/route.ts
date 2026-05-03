@@ -82,6 +82,7 @@ export async function POST(req: NextRequest) {
     descriptionInputSnapshot: body.descriptionInputSnapshot ?? base?.descriptionInputSnapshot,
     descriptionPrompt: body.descriptionPrompt ?? base?.descriptionPrompt,
     aiFillResults: body.aiFillResults ?? base?.aiFillResults,
+    defaultPriceGroup: body.defaultPriceGroup ?? base?.defaultPriceGroup,
   };
 
   const effectiveKey = productKey ?? deriveProductKey(session);
