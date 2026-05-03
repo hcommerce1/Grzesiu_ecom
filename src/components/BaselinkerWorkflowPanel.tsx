@@ -269,6 +269,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   const extraFieldSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const editableFieldSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const didAutoConfirmInventory = useRef(false)
+  const imagesSectionRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     return () => {
@@ -796,6 +797,8 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
         ...(sheetMeta ? { sheetMeta } : {}),
       })
       goToStep("images")
+      setCollapsedSections(prev => { const n = new Set(prev); n.add('category'); n.delete('images'); return n; })
+      setTimeout(() => imagesSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80)
 
       // Nieblokujący AI auto-fill w tle
       const fetchedParams: AllegroParameter[] = paramsData.parameters ?? []
@@ -2011,7 +2014,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
             </div>
 
             {/* Zdjęcia */}
-            <div className="border-b">
+            <div ref={imagesSectionRef} className="border-b">
               <button
                 className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold hover:bg-muted/30 transition-colors"
                 onClick={() => toggleSection('images')}

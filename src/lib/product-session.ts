@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import type { ProductSession, FieldSelection } from './types';
+import { createDefaultFieldSelection } from './field-selection';
 export { createDefaultFieldSelection } from './field-selection';
 
 const SESSIONS_DIR = path.join(process.cwd(), 'tmp', 'sessions');
@@ -145,9 +146,9 @@ export function buildBaselinkerPayload(session: ProductSession): Record<string, 
     ? (String(defaultWarehouse).startsWith('bl_') ? String(defaultWarehouse) : `bl_${defaultWarehouse}`)
     : undefined;
 
-  // fieldSelection wymuszone — opis/zdjęcia/parametry zawsze TAK, bundle zawsze NIE.
-  // User usunął te checkboxy z UI bo i tak zawsze są wysyłane.
+  // fieldSelection: defaults → session overrides → wymuszone stałe
   const fieldSelection: Partial<FieldSelection> = {
+    ...createDefaultFieldSelection(session.mode ?? 'new'),
     ...(session.fieldSelection ?? {}),
     description: true,
     images: true,
