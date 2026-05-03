@@ -438,25 +438,23 @@ export async function searchCategories(query: string, limit = 20, leafOnly = fal
       if (normName.includes(origWord)) bestWordScore = Math.max(bestWordScore, 20);
       if (normPath.includes(origWord)) bestWordScore = Math.max(bestWordScore, 10);
 
-      // Check stemmed match
+      // Check stemmed match — Levenshtein only for long stems (≥8 chars) to avoid false positives
       for (const snw of stemmedNameWords) {
         if (POLISH_STOP_WORDS.has(snw)) continue;
         if (snw === sw) bestWordScore = Math.max(bestWordScore, 25);
         else if (snw.startsWith(sw) || sw.startsWith(snw)) bestWordScore = Math.max(bestWordScore, 15);
-        else {
+        else if (sw.length >= 8 && snw.length >= 8) {
           const dist = levenshtein(sw, snw);
-          const threshold = sw.length <= 4 ? 1 : 2;
-          if (dist <= threshold && Math.abs(sw.length - snw.length) < threshold) bestWordScore = Math.max(bestWordScore, 12 - dist * 3);
+          if (dist <= 2 && Math.abs(sw.length - snw.length) <= 1) bestWordScore = Math.max(bestWordScore, 12 - dist * 3);
         }
       }
       for (const spw of stemmedPathWords) {
         if (POLISH_STOP_WORDS.has(spw)) continue;
         if (spw === sw) bestWordScore = Math.max(bestWordScore, 15);
         else if (spw.startsWith(sw) || sw.startsWith(spw)) bestWordScore = Math.max(bestWordScore, 8);
-        else {
+        else if (sw.length >= 8 && spw.length >= 8) {
           const dist = levenshtein(sw, spw);
-          const threshold = sw.length <= 4 ? 1 : 2;
-          if (dist <= threshold && Math.abs(sw.length - spw.length) < threshold) bestWordScore = Math.max(bestWordScore, 6 - dist * 2);
+          if (dist <= 2 && Math.abs(sw.length - spw.length) <= 1) bestWordScore = Math.max(bestWordScore, 6 - dist * 2);
         }
       }
 
