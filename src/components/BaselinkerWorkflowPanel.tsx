@@ -267,6 +267,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
   const paramSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const extraFieldSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const editableFieldSyncTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const didAutoConfirmInventory = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -443,14 +444,19 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       .then((d) => {
         setSession(d.session)
         // Sprawdź czy sesja dotyczy tego samego produktu.
-        // Jeśli używamy productKey (sheets products), sesja jest zawsze właściwa — skip URL check.
-        const sessionMatchesProduct = d.session && (
-          productKey
-            ? true
-            : editProductId
-              ? d.session.product_id === editProductId
-              : d.session.data?.url === productData.url
-        )
+        const sessionMatchesProduct = d.session && (() => {
+          if (!productKey) {
+            if (editProductId) return d.session!.product_id === editProductId
+            return d.session!.data?.url === productData.url
+          }
+          // productKey-based: wymagamy weryfikacji — brak możliwości = odrzuć
+          if (editProductId) return d.session!.product_id === editProductId
+          if (sheetProductId && productData.url && d.session!.data?.url) {
+            return d.session!.data.url === productData.url
+          }
+          // Brak URL po obu stronach → nie można zweryfikować → odrzuć sesję
+          return false
+        })()
         // Przywroc dane z sesji tylko jesli dotycza tego samego produktu
         if (sessionMatchesProduct) {
           if (d.session.imagesMeta) {
@@ -545,6 +551,15 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       setLoading(false)
     }
   }
+
+  // Auto-confirm inventory when BL cache loads and defaults are set — user doesn't need to click "Potwierdź"
+  useEffect(() => {
+    if (!blCache || !selectedInventoryId || didAutoConfirmInventory.current) return
+    if (currentStep !== 'inventory') return
+    didAutoConfirmInventory.current = true
+    handleInventoryConfirm()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blCache, selectedInventoryId])
 
   const markEditProgress = useEditProgressStore((s) => s.markProgress)
   const clearEditProgress = useEditProgressStore((s) => s.clearProgress)
@@ -2071,6 +2086,7 @@ export function BaselinkerWorkflowPanel({ productData, editProductId, editProduc
       {showApproval && session && (
         <ApprovalDrawer
           session={session}
+          productKey={productKey}
           images={imagesMeta.filter(i => !i.removed).map(i => i.url)}
           onClose={() => setShowApproval(false)}
           onApproved={async (id) => {
