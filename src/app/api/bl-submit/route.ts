@@ -10,10 +10,24 @@ import {
 import { invalidateProductListCache } from '@/lib/db';
 
 // POST /api/bl-submit — build payload from session and submit to BaseLinker
-export async function POST() {
-  const session = getSession();
+export async function POST(req: Request) {
+  const url = new URL(req.url);
+  const productKey = url.searchParams.get('productKey') ?? undefined;
+  const session = getSession(productKey);
   if (!session) {
     return NextResponse.json({ error: 'No active product session' }, { status: 400 });
+  }
+
+  // Sanity check: productKey musi zgadzać się z zawartością sesji
+  if (productKey?.startsWith('bl_') && session.product_id) {
+    if (String(session.product_id) !== productKey.slice(3)) {
+      return NextResponse.json({ error: `Session mismatch: key=${productKey}, session.product_id=${session.product_id}` }, { status: 400 });
+    }
+  }
+  if (productKey?.startsWith('sheet_') && session.sheetProductId) {
+    if (String(session.sheetProductId) !== productKey.slice(6)) {
+      return NextResponse.json({ error: `Session mismatch: key=${productKey}, session.sheetProductId=${session.sheetProductId}` }, { status: 400 });
+    }
   }
 
   if (!session.inventoryId) {

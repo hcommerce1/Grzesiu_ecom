@@ -11,9 +11,10 @@ interface ApprovalDrawerProps {
   onClose: () => void;
   onApproved: (productId: number) => void;
   images?: string[];
+  productKey?: string;
 }
 
-export function ApprovalDrawer({ session, onClose, onApproved, images: imagesProp }: ApprovalDrawerProps) {
+export function ApprovalDrawer({ session, onClose, onApproved, images: imagesProp, productKey }: ApprovalDrawerProps) {
   const [canSubmit, setCanSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -31,9 +32,10 @@ export function ApprovalDrawer({ session, onClose, onApproved, images: imagesPro
     setSubmitting(true);
     setError('');
     try {
+      const sessionQs = productKey ? `?productKey=${encodeURIComponent(productKey)}` : '';
       // Save edited description to session before submitting
       if (editedDesc !== initialDesc) {
-        await fetch('/api/product-session', {
+        await fetch(`/api/product-session${sessionQs}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -44,7 +46,7 @@ export function ApprovalDrawer({ session, onClose, onApproved, images: imagesPro
           }),
         });
       }
-      const res = await fetch('/api/bl-submit', { method: 'POST' });
+      const res = await fetch(`/api/bl-submit${sessionQs}`, { method: 'POST' });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       onApproved(data.product_id);

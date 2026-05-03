@@ -24,7 +24,6 @@ export async function POST(req: NextRequest) {
       .filter(({ product }) =>
         product?.scrape_url &&
         product.status !== 'scraping' &&
-        product.status !== 'done' &&
         product.status !== 'in_progress'
       );
 

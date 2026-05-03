@@ -1071,7 +1071,8 @@ export function GoogleSheetsTab() {
                               onBlur={(e) => saveUrl(product.id, e.target.value)}
                               onPaste={(e) => {
                                 const pasted = e.clipboardData.getData('text').trim();
-                                if ((product.status === 'new' || product.status === 'error') && pasted.startsWith('http')) {
+                                const notBusy = product.status !== 'scraping' && product.status !== 'in_progress';
+                                if (notBusy && pasted.startsWith('http')) {
                                   setTimeout(() => autoScrapeOnPaste(product.id, pasted), 100);
                                 }
                               }}

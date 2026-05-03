@@ -407,6 +407,9 @@ export async function buildCategoryTree(): Promise<FlatCategory[]> {
  * Handles: case-insensitive, Polish diacritics, typos (Levenshtein),
  * singular/plural forms, partial word matches.
  */
+// Polskie przyimki i spójniki — nie uczestniczą w Levenshtein scoring
+const POLISH_STOP_WORDS = new Set(['dla', 'do', 'w', 'z', 'na', 'i', 'lub', 'oraz', 'nie', 'bez', 'po', 'od', 'przy', 'przez', 'ze', 'we', 'wo']);
+
 export async function searchCategories(query: string, limit = 20, leafOnly = false): Promise<FlatCategory[]> {
   const tree = await buildCategoryTree();
   const normalizedQuery = normalizePolish(query.toLowerCase().trim());
@@ -437,21 +440,23 @@ export async function searchCategories(query: string, limit = 20, leafOnly = fal
 
       // Check stemmed match
       for (const snw of stemmedNameWords) {
+        if (POLISH_STOP_WORDS.has(snw)) continue;
         if (snw === sw) bestWordScore = Math.max(bestWordScore, 25);
         else if (snw.startsWith(sw) || sw.startsWith(snw)) bestWordScore = Math.max(bestWordScore, 15);
         else {
           const dist = levenshtein(sw, snw);
           const threshold = sw.length <= 4 ? 1 : 2;
-          if (dist <= threshold) bestWordScore = Math.max(bestWordScore, 12 - dist * 3);
+          if (dist <= threshold && Math.abs(sw.length - snw.length) < threshold) bestWordScore = Math.max(bestWordScore, 12 - dist * 3);
         }
       }
       for (const spw of stemmedPathWords) {
+        if (POLISH_STOP_WORDS.has(spw)) continue;
         if (spw === sw) bestWordScore = Math.max(bestWordScore, 15);
         else if (spw.startsWith(sw) || sw.startsWith(spw)) bestWordScore = Math.max(bestWordScore, 8);
         else {
           const dist = levenshtein(sw, spw);
           const threshold = sw.length <= 4 ? 1 : 2;
-          if (dist <= threshold) bestWordScore = Math.max(bestWordScore, 6 - dist * 2);
+          if (dist <= threshold && Math.abs(sw.length - spw.length) < threshold) bestWordScore = Math.max(bestWordScore, 6 - dist * 2);
         }
       }
 

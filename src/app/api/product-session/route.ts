@@ -31,14 +31,15 @@ export async function POST(req: NextRequest) {
   const existing = getSession(productKey);
 
   // Nowy produkt? Nie ciagnij stanu z poprzedniej oferty (kategorii, parametrow, opisu, etc.).
-  // Przy explicit productKey ten warunek nie ma znaczenia (każdy klucz ma swój plik).
   const incomingUrl = body.data?.url;
   const incomingProdId = body.product_id;
-  const isDifferentProduct =
-    !productKey && (
-      !!(incomingUrl && existing?.data?.url && incomingUrl !== existing.data.url) ||
-      !!(incomingProdId && existing?.product_id && incomingProdId !== existing.product_id)
-    );
+  const urlMismatch = !!(incomingUrl && existing?.data?.url && incomingUrl !== existing.data.url);
+  const idMismatch = !!(incomingProdId && existing?.product_id && incomingProdId !== existing.product_id);
+  const isDifferentProduct = productKey
+    // Keyed session: reset jeśli URL się zmienił (np. reimport wiersza sheets z innym produktem)
+    ? urlMismatch
+    // Active session: reset jeśli URL lub ID się zmienił
+    : urlMismatch || idMismatch;
   const base = isDifferentProduct ? null : existing;
 
   const sessionMode = body.mode ?? base?.mode ?? 'new';

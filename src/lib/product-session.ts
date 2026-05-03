@@ -39,7 +39,10 @@ function getActiveKey(): string | null {
   try {
     const raw = fs.readFileSync(ACTIVE_POINTER, 'utf-8');
     const parsed = JSON.parse(raw) as { activeKey?: string };
-    return parsed.activeKey ?? null;
+    const key = parsed.activeKey ?? null;
+    // _default to shared slot — nigdy nie zwracaj jako "active" bez jawnego productKey
+    if (key === '_default') return null;
+    return key;
   } catch {
     return null;
   }

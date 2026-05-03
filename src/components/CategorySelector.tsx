@@ -130,6 +130,7 @@ export function CategorySelector({ onSelect, onReset, selectedCategory, productD
 
     setSuggestionsLoading(true);
     setSuggestionsError('');
+    setSuggestions([]);
     try {
       const res = await fetch('/api/allegro/suggest-categories', {
         method: 'POST',
