@@ -6,6 +6,8 @@ import { logTokenUsage } from '@/lib/token-logger';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-haiku-4-5-20251001';
 
+const STOP_WORDS = new Set(['dla', 'do', 'ze', 'na', 'po', 'przy', 'bez', 'lub', 'oraz', 'nie', 'jak', 'typ', 'set', 'new', 'the', 'and', 'for']);
+
 interface SuggestRequest {
   productTitle: string;
   productAttributes?: Record<string, string>;
@@ -21,85 +23,95 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Brak tytułu produktu' }, { status: 400 });
     }
 
-    // Step 1: Ask LLM to suggest category search terms
-    const attributesSummary = body.productAttributes
-      ? Object.entries(body.productAttributes)
-          .slice(0, 15)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join('\n')
-      : '';
+    // Step 1: Collect category candidates by searching with words from product title
+    const title = body.productTitle;
+    const words = title
+      .toLowerCase()
+      .replace(/[^a-ząćęłńóśźż\s-]/gi, ' ')
+      .split(/[\s-]+/)
+      .filter(w => w.length >= 3 && !STOP_WORDS.has(w));
 
-    const userPrompt = `Jesteś ekspertem od kategoryzacji produktów na Allegro.pl.
+    const seenIds = new Set<string>();
+    const allCandidates: Array<{ id: string; name: string; fullPath: string; leaf: boolean }> = [];
 
-Produkt: "${body.productTitle}"
+    // Search with individual words from title
+    for (const word of words.slice(0, 8)) {
+      try {
+        const results = await searchCategories(word, 12, true);
+        for (const cat of results) {
+          if (!seenIds.has(cat.id)) {
+            seenIds.add(cat.id);
+            allCandidates.push(cat);
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // Also try full title (catches multi-word exact matches)
+    try {
+      const fullResults = await searchCategories(title, 10, true);
+      for (const cat of fullResults) {
+        if (!seenIds.has(cat.id)) {
+          seenIds.add(cat.id);
+          allCandidates.push(cat);
+        }
+      }
+    } catch { /* skip */ }
+
+    // Step 2: AI picks best 5 from candidates
+    if (allCandidates.length === 0) {
+      return NextResponse.json({ suggestions: [] });
+    }
+
+    const candidateList = allCandidates
+      .slice(0, 30)
+      .map(c => `ID:${c.id} | ${c.name} | ${c.fullPath}`)
+      .join('\n');
+
+    const rankPrompt = `Produkt: "${title}"
 ${body.sourceCategory ? `Kategoria źródłowa: ${body.sourceCategory}` : ''}
-${attributesSummary ? `Atrybuty:\n${attributesSummary}` : ''}
 
-Zaproponuj 5-8 wyszukiwań kategorii Allegro, które najlepiej pasują do tego produktu.
-Każde wyszukiwanie to 1-3 słowa kluczowe po polsku, które mogą być nazwą kategorii liściowej na Allegro.
-Używaj POLSKICH nazw kategorii Allegro (np. "odkurzacze", "silniki elektryczne", "zawiasy").
-Jeśli produkt jest techniczny lub niszowy, uwzględnij też szersze kategorie nadrzędne (np. "osprzęt elektryczny", "akcesoria kablowe", "narzędzia").
+Poniżej lista kandydatów kategorii Allegro. Wybierz 5 NAJLEPIEJ pasujących do tego produktu i zwróć ich ID w kolejności od najlepszego.
+Jeśli żadna nie pasuje dobrze, wybierz najbliższe.
+
+Kandydaci:
+${candidateList}
 
 Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
-{"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}`;
+{"ids": ["123", "456", "789", "101", "102"]}`;
 
-    const llmRes = await anthropic.messages.create({
+    const rankRes = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 500,
-      messages: [{ role: 'user', content: userPrompt }],
+      max_tokens: 200,
+      messages: [{ role: 'user', content: rankPrompt }],
     });
 
     logTokenUsage({
       productId: body.productId ?? '__global__',
       toolName: 'suggest_categories',
       model: MODEL,
-      usage: llmRes.usage,
+      usage: rankRes.usage,
     });
 
-    const content = (llmRes.content[0] as { type: 'text'; text: string }).text ?? '{}';
-    let searches: string[] = [];
+    let pickedIds: string[] = [];
     try {
-      const parsed = JSON.parse(content);
-      searches = Array.isArray(parsed.searches) ? parsed.searches : [];
-    } catch {
-      searches = [body.productTitle.split(' ').slice(0, 3).join(' ')];
+      const parsed = JSON.parse((rankRes.content[0] as { type: 'text'; text: string }).text ?? '{}');
+      pickedIds = Array.isArray(parsed.ids) ? parsed.ids.map(String) : [];
+    } catch { /* fallback below */ }
+
+    // Build ordered suggestions from picked IDs, fallback to all candidates
+    const candidatesById = new Map(allCandidates.map(c => [c.id, c]));
+    const ordered = pickedIds
+      .map(id => candidatesById.get(id))
+      .filter(Boolean) as typeof allCandidates;
+
+    // Fill up to 5 with remaining candidates if AI returned fewer
+    for (const cat of allCandidates) {
+      if (ordered.length >= 5) break;
+      if (!pickedIds.includes(cat.id)) ordered.push(cat);
     }
 
-    // Step 2: Search for each term and collect unique leaf categories
-    const seenIds = new Set<string>();
-    const allResults: Array<{ id: string; name: string; fullPath: string; leaf: boolean }> = [];
-
-    for (const term of searches.slice(0, 8)) {
-      try {
-        const results = await searchCategories(term, 15, true);
-        for (const cat of results) {
-          if (!seenIds.has(cat.id)) {
-            seenIds.add(cat.id);
-            allResults.push(cat);
-          }
-        }
-      } catch {
-        // Skip failed searches
-      }
-    }
-
-    // Fallback — jeśli brak wyników, szukaj pierwszym słowem każdego termu
-    if (allResults.length === 0) {
-      const fallbackTerms = [...new Set(searches.map((s: string) => s.split(' ')[0]).filter(Boolean))]
-      for (const term of fallbackTerms.slice(0, 4)) {
-        try {
-          const results = await searchCategories(term, 10, true)
-          for (const cat of results) {
-            if (!seenIds.has(cat.id)) {
-              seenIds.add(cat.id)
-              allResults.push(cat)
-            }
-          }
-        } catch { /* skip */ }
-      }
-    }
-
-    const suggestions = allResults.slice(0, 10).map(cat => ({
+    const suggestions = ordered.slice(0, 5).map(cat => ({
       id: cat.id,
       name: cat.name,
       path: cat.fullPath,

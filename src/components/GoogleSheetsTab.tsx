@@ -818,26 +818,26 @@ export function GoogleSheetsTab() {
     );
   }
 
-  // Scraping in progress for a batch item
-  if (batch && !batch.currentProductData) {
+  // Scraping banner (inline — nie blokuje listy produktów)
+  const scrapingBanner = batch && !batch.currentProductData ? (() => {
     const currentProduct = active.find((p) => p.id === batch.queue[batch.currentIndex]);
     return (
-      <div className="flex flex-col items-center justify-center py-20 gap-4">
-        <Loader2 className="size-8 animate-spin text-primary" />
-        <p className="text-sm font-medium">
-          Scrapuję produkt {batch.currentIndex + 1}/{batch.queue.length}
-        </p>
-        <p className="text-xs text-muted-foreground">{currentProduct?.nazwa ?? "..."}</p>
-        <Button size="sm" variant="ghost" onClick={cancelBatch} className="gap-1.5 text-xs text-destructive">
-          <XCircle className="size-3.5" />
+      <div className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 mb-3">
+        <Loader2 className="size-4 animate-spin text-blue-600 shrink-0" />
+        <span className="text-sm text-blue-800 font-medium truncate">
+          Scrapuję: {currentProduct?.nazwa ?? batch.queue[batch.currentIndex]} ({batch.currentIndex + 1}/{batch.queue.length})
+        </span>
+        <Button size="sm" variant="ghost" onClick={cancelBatch} className="ml-auto gap-1 text-xs text-destructive shrink-0 h-6 px-2">
+          <XCircle className="size-3" />
           Anuluj
         </Button>
       </div>
     );
-  }
+  })() : null;
 
   return (
     <div className="space-y-6">
+      {scrapingBanner}
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
