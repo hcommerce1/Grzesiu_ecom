@@ -37,6 +37,8 @@ ${attributesSummary ? `Atrybuty:\n${attributesSummary}` : ''}
 
 Zaproponuj 5-8 wyszukiwań kategorii Allegro, które najlepiej pasują do tego produktu.
 Każde wyszukiwanie to 1-3 słowa kluczowe po polsku, które mogą być nazwą kategorii liściowej na Allegro.
+Używaj POLSKICH nazw kategorii Allegro (np. "odkurzacze", "silniki elektryczne", "zawiasy").
+Jeśli produkt jest techniczny lub niszowy, uwzględnij też szersze kategorie nadrzędne (np. "osprzęt elektryczny", "akcesoria kablowe", "narzędzia").
 
 Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
 {"searches": ["odkurzacze pionowe", "odkurzacze bezprzewodowe", "odkurzacze", ...]}`;
@@ -78,6 +80,22 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON bez markdown:
         }
       } catch {
         // Skip failed searches
+      }
+    }
+
+    // Fallback — jeśli brak wyników, szukaj pierwszym słowem każdego termu
+    if (allResults.length === 0) {
+      const fallbackTerms = [...new Set(searches.map((s: string) => s.split(' ')[0]).filter(Boolean))]
+      for (const term of fallbackTerms.slice(0, 4)) {
+        try {
+          const results = await searchCategories(term, 10, true)
+          for (const cat of results) {
+            if (!seenIds.has(cat.id)) {
+              seenIds.add(cat.id)
+              allResults.push(cat)
+            }
+          }
+        } catch { /* skip */ }
       }
     }
 

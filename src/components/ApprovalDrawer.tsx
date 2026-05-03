@@ -101,7 +101,13 @@ export function ApprovalDrawer({ session, onClose, onApproved, images: imagesPro
             <Row label="Nazwa" value={session.generatedTitle || session.data?.title} />
             {sel['sku'] !== false && session.data?.sku && <Row label="SKU" value={session.data.sku} />}
             {sel['ean'] !== false && session.data?.ean && <Row label="EAN" value={session.data.ean} />}
-            {session.data?.price && <Row label="Cena" value={`${session.data.price} ${session.data.currency ?? 'PLN'}`} />}
+            {(() => {
+              const userPrice = session.editableFieldValues?.['prices']
+              const displayPrice = userPrice ? String(userPrice).replace(',', '.') : session.data?.price
+              return displayPrice
+                ? <Row label="Cena" value={`${displayPrice} ${session.data?.currency ?? 'PLN'}`} />
+                : null
+            })()}
           </Section>
 
           {/* Images */}
